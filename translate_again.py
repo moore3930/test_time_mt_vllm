@@ -158,6 +158,18 @@ def save_jsonl(path: str, rows: List[Dict]) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def print_round_average_scores(rows: List[Dict], num_rounds: int) -> None:
+    if not rows:
+        return
+    print("Average scores by round:")
+    for i in range(1, num_rounds + 1):
+        comet_key = f"comet_hypo_{i}"
+        comet_kiwi_key = f"cometkiwi_hypo_{i}"
+        comet_avg = sum(float(row[comet_key]) for row in rows) / len(rows)
+        comet_kiwi_avg = sum(float(row[comet_kiwi_key]) for row in rows) / len(rows)
+        print(f"- round {i}: COMET={comet_avg:.4f} COMETKiwi={comet_kiwi_avg:.4f}")
+
+
 def _extract_scores(prediction_result: object) -> List[float]:
     if hasattr(prediction_result, "scores"):
         scores = getattr(prediction_result, "scores")
@@ -334,6 +346,7 @@ def main() -> None:
         print(
             f"- id={row['id']} src={row['source_text'][:40]!r} {hypo_preview} {score_preview}"
         )
+    print_round_average_scores(results, args.num_rounds)
 
 
 if __name__ == "__main__":
