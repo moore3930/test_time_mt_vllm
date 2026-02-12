@@ -209,6 +209,27 @@ def print_round_average_scores(rows: List[Dict], num_rounds: int) -> None:
         print(f"- round {i}: COMET={comet_avg:.4f} COMETKiwi={comet_kiwi_avg:.4f}")
 
 
+def build_summary_row(rows: List[Dict], num_rounds: int, args: argparse.Namespace) -> Dict:
+    summary: Dict = {
+        "record_type": "summary",
+        "num_rows": len(rows),
+        "num_rounds": num_rounds,
+        "model": args.model,
+        "temperature": args.temperature,
+        "decoding": args.decoding,
+        "top_p": args.top_p,
+        "beam_width": args.beam_width,
+        "length_penalty": args.length_penalty,
+        "early_stopping": args.early_stopping,
+    }
+    for i in range(1, num_rounds + 1):
+        comet_key = f"comet_hypo_{i}"
+        comet_kiwi_key = f"cometkiwi_hypo_{i}"
+        summary[f"avg_{comet_key}"] = sum(float(row[comet_key]) for row in rows) / len(rows)
+        summary[f"avg_{comet_kiwi_key}"] = sum(float(row[comet_kiwi_key]) for row in rows) / len(rows)
+    return summary
+
+
 def _extract_scores(prediction_result: object) -> List[float]:
     if hasattr(prediction_result, "scores"):
         scores = getattr(prediction_result, "scores")
@@ -396,7 +417,9 @@ def main() -> None:
         temperature=args.temperature,
         decoding=args.decoding,
     )
-    save_jsonl(str(output_path), results)
+    summary_row = build_summary_row(results, args.num_rounds, args)
+    rows_to_save = [*results, summary_row]
+    save_jsonl(str(output_path), rows_to_save)
     print(f"Saved {len(results)} translations to {output_path}")
     print("Preview:")
     for row in results[:3]:
