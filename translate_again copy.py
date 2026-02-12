@@ -26,8 +26,8 @@ LANG_NAME_MAP = {
 }
 
 
-def build_prompt(tokenizer: AutoTokenizer, text: str, src_lang: str, tgt_lang: str) -> str:
-    messages = [
+def build_first_turn_messages(text: str, src_lang: str, tgt_lang: str) -> List[Dict[str, str]]:
+    return [
         {
             "role": "system",
             "content": "You are a professional translator. Return only the translation result.",
@@ -37,6 +37,9 @@ def build_prompt(tokenizer: AutoTokenizer, text: str, src_lang: str, tgt_lang: s
             "content": f"Translate the following text from {src_lang} to {tgt_lang}:\n\n{text}",
         },
     ]
+
+
+def render_chat_prompt(tokenizer: AutoTokenizer, messages: List[Dict[str, str]]) -> str:
     return tokenizer.apply_chat_template(
         messages,
         tokenize=False,
@@ -44,32 +47,22 @@ def build_prompt(tokenizer: AutoTokenizer, text: str, src_lang: str, tgt_lang: s
     )
 
 
-def build_refine_prompt(
-    tokenizer: AutoTokenizer,
+def build_second_turn_messages(
     source_text: str,
     hypo_1: str,
     src_lang: str,
     tgt_lang: str,
-) -> str:
-    messages = [
-        {
-            "role": "system",
-            "content": "You are a professional translator. Return only the final improved translation.",
-        },
+) -> List[Dict[str, str]]:
+    return [
+        *build_first_turn_messages(source_text, src_lang, tgt_lang),
+        {"role": "assistant", "content": hypo_1},
         {
             "role": "user",
             "content": (
-                f"Source ({src_lang}):\n{source_text}\n\n"
-                f"First translation ({tgt_lang}):\n{hypo_1}\n\n"
-                f"Translate again and output a better {tgt_lang} translation."
+                f"Please translate again for a better version: "
             ),
         },
     ]
-    return tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-    )
 
 
 def batched(items: List[Dict], batch_size: int) -> Iterable[List[Dict]]:
@@ -132,25 +125,26 @@ def run_batch_translation(
     )
     results: List[Dict] = []
     for chunk in batched(items, batch_size):
-        first_round_prompts = [
-            build_prompt(
-                tokenizer=tokenizer,
+        first_round_prompts = []
+        for item in chunk:
+            messages = build_first_turn_messages(
                 text=item["source_text"],
                 src_lang=src_lang,
                 tgt_lang=tgt_lang,
             )
-            for item in chunk
-        ]
+            first_round_prompts.append(render_chat_prompt(tokenizer, messages))
         first_round_outputs = llm.generate(first_round_prompts, sampling)
         hypo_1_texts = [output.outputs[0].text.strip() for output in first_round_outputs]
 
         second_round_prompts = [
-            build_refine_prompt(
+            render_chat_prompt(
                 tokenizer=tokenizer,
+                messages=build_second_turn_messages(
                 source_text=item["source_text"],
                 hypo_1=hypo_1,
                 src_lang=src_lang,
                 tgt_lang=tgt_lang,
+                ),
             )
             for item, hypo_1 in zip(chunk, hypo_1_texts)
         ]

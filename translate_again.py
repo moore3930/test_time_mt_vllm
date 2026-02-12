@@ -47,24 +47,6 @@ def render_chat_prompt(tokenizer: AutoTokenizer, messages: List[Dict[str, str]])
     )
 
 
-def build_second_turn_messages(
-    source_text: str,
-    hypo_1: str,
-    src_lang: str,
-    tgt_lang: str,
-) -> List[Dict[str, str]]:
-    return [
-        *build_first_turn_messages(source_text, src_lang, tgt_lang),
-        {"role": "assistant", "content": hypo_1},
-        {
-            "role": "user",
-            "content": (
-                f"Please translate again for a better version: "
-            ),
-        },
-    ]
-
-
 def batched(items: List[Dict], batch_size: int) -> Iterable[List[Dict]]:
     if batch_size <= 0:
         raise ValueError("--batch-size must be > 0")
@@ -115,8 +97,12 @@ def run_batch_translation(
     max_tokens: int,
     temperature: float,
     batch_size: int,
+    num_rounds: int,
 ) -> List[Dict]:
     from vllm import SamplingParams
+
+    if num_rounds <= 0:
+        raise ValueError("--num-rounds must be > 0")
 
     sampling = SamplingParams(
         temperature=temperature,
@@ -125,41 +111,44 @@ def run_batch_translation(
     )
     results: List[Dict] = []
     for chunk in batched(items, batch_size):
-        first_round_prompts = []
-        for item in chunk:
-            messages = build_first_turn_messages(
+        messages_per_item: List[List[Dict[str, str]]] = [
+            build_first_turn_messages(
                 text=item["source_text"],
                 src_lang=src_lang,
                 tgt_lang=tgt_lang,
             )
-            first_round_prompts.append(render_chat_prompt(tokenizer, messages))
-        first_round_outputs = llm.generate(first_round_prompts, sampling)
-        hypo_1_texts = [output.outputs[0].text.strip() for output in first_round_outputs]
-
-        second_round_prompts = [
-            render_chat_prompt(
-                tokenizer=tokenizer,
-                messages=build_second_turn_messages(
-                source_text=item["source_text"],
-                hypo_1=hypo_1,
-                src_lang=src_lang,
-                tgt_lang=tgt_lang,
-                ),
-            )
-            for item, hypo_1 in zip(chunk, hypo_1_texts)
+            for item in chunk
         ]
-        second_round_outputs = llm.generate(second_round_prompts, sampling)
+        round_predictions_per_item: List[List[str]] = [[] for _ in chunk]
 
-        for item, hypo_1, output in zip(chunk, hypo_1_texts, second_round_outputs):
-            results.append(
-                {
-                    "id": item["id"],
-                    "source_text": item["source_text"],
-                    "reference_text": item["reference_text"],
-                    "hypo_1": hypo_1,
-                    "hypo_2": output.outputs[0].text.strip(),
-                }
-            )
+        for round_idx in range(1, num_rounds + 1):
+            prompts = [render_chat_prompt(tokenizer, messages) for messages in messages_per_item]
+            outputs = llm.generate(prompts, sampling)
+            round_texts = [output.outputs[0].text.strip() for output in outputs]
+
+            for i, text in enumerate(round_texts):
+                round_predictions_per_item[i].append(text)
+                messages_per_item[i].append({"role": "assistant", "content": text})
+                if round_idx < num_rounds:
+                    messages_per_item[i].append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Translate again again for a better version.\n"
+                                f"Return only the improved {tgt_lang} translation."
+                            ),
+                        }
+                    )
+
+        for item, round_texts in zip(chunk, round_predictions_per_item):
+            row = {
+                "id": item["id"],
+                "source_text": item["source_text"],
+                "reference_text": item["reference_text"],
+            }
+            for i, text in enumerate(round_texts, start=1):
+                row[f"hypo_{i}"] = text
+            results.append(row)
     return results
 
 
@@ -199,6 +188,7 @@ def main() -> None:
     parser.add_argument("--lang-pair", required=True, help="Language pair folder name, e.g. en-zh")
     parser.add_argument("--max-samples", type=int, default=1024, help="Maximum dataset samples to translate")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size for vLLM generation")
+    parser.add_argument("--num-rounds", type=int, default=4, help="Total translation rounds in one chat context")
     parser.add_argument("--output-jsonl", default="translations.jsonl", help="Output path for dataset mode")
 
     parser.add_argument("--max-tokens", type=int, default=512, help="Maximum output tokens")
@@ -248,14 +238,15 @@ def main() -> None:
         max_tokens=args.max_tokens,
         temperature=args.temperature,
         batch_size=args.batch_size,
+        num_rounds=args.num_rounds,
     )
     save_jsonl(args.output_jsonl, results)
     print(f"Saved {len(results)} translations to {args.output_jsonl}")
     print("Preview:")
     for row in results[:3]:
+        hypo_preview = " ".join([f"hypo_{i}={row[f'hypo_{i}'][:28]!r}" for i in range(1, args.num_rounds + 1)])
         print(
-            f"- id={row['id']} src={row['source_text'][:40]!r} "
-            f"hypo_1={row['hypo_1'][:40]!r} hypo_2={row['hypo_2'][:60]!r}"
+            f"- id={row['id']} src={row['source_text'][:40]!r} {hypo_preview}"
         )
 
 
