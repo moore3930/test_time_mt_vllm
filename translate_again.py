@@ -7,6 +7,24 @@ import json
 from pathlib import Path
 from typing import Dict, Iterable, List
 
+LANG_NAME_MAP = {
+    "en": "English",
+    "zh": "Chinese",
+    "ja": "Japanese",
+    "de": "German",
+    "fr": "French",
+    "es": "Spanish",
+    "it": "Italian",
+    "ru": "Russian",
+    "pt": "Portuguese",
+    "cs": "Czech",
+    "uk": "Ukrainian",
+    "ko": "Korean",
+    "hi": "Hindi",
+    "nl": "Dutch",
+    "is": "Icelandic",
+}
+
 
 def build_prompt(tokenizer: AutoTokenizer, text: str, src_lang: str, tgt_lang: str) -> str:
     messages = [
@@ -114,13 +132,31 @@ def save_jsonl(path: str, rows: List[Dict]) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def infer_pair_settings(
+    lang_pair: str,
+    src_key_override: str | None,
+    tgt_key_override: str | None,
+    src_lang_override: str | None,
+    tgt_lang_override: str | None,
+) -> tuple[str, str, str, str]:
+    parts = lang_pair.split("-")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError(f"Invalid --lang-pair: {lang_pair}. Expected format like en-zh.")
+    inferred_src_key, inferred_tgt_key = parts[0], parts[1]
+    src_key = src_key_override or inferred_src_key
+    tgt_key = tgt_key_override or inferred_tgt_key
+    src_lang = src_lang_override or LANG_NAME_MAP.get(src_key, src_key)
+    tgt_lang = tgt_lang_override or LANG_NAME_MAP.get(tgt_key, tgt_key)
+    return src_key, tgt_key, src_lang, tgt_lang
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Translate text using vLLM + Gemma 3 4B IT")
     parser.add_argument("--model", default="google/gemma-3-4b-it", help="Hugging Face model id")
-    parser.add_argument("--src-lang", default="Chinese", help="Source language")
-    parser.add_argument("--tgt-lang", default="English", help="Target language")
-    parser.add_argument("--src-key", default="en", help="Source language key, e.g. zh")
-    parser.add_argument("--tgt-key", default="zh", help="Target language key, e.g. en")
+    parser.add_argument("--src-lang", help="Source language (optional override)")
+    parser.add_argument("--tgt-lang", help="Target language (optional override)")
+    parser.add_argument("--src-key", help="Source language key (optional override)")
+    parser.add_argument("--tgt-key", help="Target language key (optional override)")
 
     parser.add_argument("--dataset-root", default="datasets/wmt24pp/test", help="Local dataset root directory")
     parser.add_argument("--lang-pair", required=True, help="Language pair folder name, e.g. en-zh")
@@ -141,6 +177,14 @@ def main() -> None:
         missing = e.name or "required package"
         raise SystemExit(f"Missing dependency: {missing}. Install with: pip install transformers vllm") from e
 
+    src_key, tgt_key, src_lang, tgt_lang = infer_pair_settings(
+        lang_pair=args.lang_pair,
+        src_key_override=args.src_key,
+        tgt_key_override=args.tgt_key,
+        src_lang_override=args.src_lang,
+        tgt_lang_override=args.tgt_lang,
+    )
+
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     llm = LLM(
         model=args.model,
@@ -151,8 +195,8 @@ def main() -> None:
     items = load_local_pair_inputs(
         dataset_root=args.dataset_root,
         lang_pair=args.lang_pair,
-        src_key=args.src_key,
-        tgt_key=args.tgt_key,
+        src_key=src_key,
+        tgt_key=tgt_key,
         max_samples=args.max_samples,
     )
     if not items:
@@ -162,8 +206,8 @@ def main() -> None:
         llm=llm,
         tokenizer=tokenizer,
         items=items,
-        src_lang=args.src_lang,
-        tgt_lang=args.tgt_lang,
+        src_lang=src_lang,
+        tgt_lang=tgt_lang,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
         batch_size=args.batch_size,
