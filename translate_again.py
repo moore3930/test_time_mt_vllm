@@ -35,7 +35,7 @@ def build_first_turn_messages(text: str, src_lang: str, tgt_lang: str) -> List[D
         },
         {
             "role": "user",
-            "content": f"Translate the following text from {src_lang} to {tgt_lang}:\n\n{src_lang}: {text}\n{tgt_lang}: ",
+            "content": f"Translate the following text from {src_lang} to {tgt_lang}:\n\n{src_lang}: {text}\n\n{tgt_lang}: ",
         },
     ]
 
@@ -99,6 +99,9 @@ def run_batch_translation(
     temperature: float,
     top_p: float,
     decoding: str,
+    beam_width: int,
+    length_penalty: float,
+    early_stopping: bool,
     batch_size: int,
     num_rounds: int,
 ) -> List[Dict]:
@@ -111,6 +114,18 @@ def run_batch_translation(
         sampling = SamplingParams(
             temperature=0.0,
             top_p=1.0,
+            max_tokens=max_tokens,
+        )
+    elif decoding == "beam_search":
+        if beam_width < 1:
+            raise ValueError("--beam-width must be >= 1")
+        sampling = SamplingParams(
+            use_beam_search=True,
+            best_of=beam_width,
+            temperature=0.0,
+            top_p=1.0,
+            length_penalty=length_penalty,
+            early_stopping=early_stopping,
             max_tokens=max_tokens,
         )
     else:
@@ -145,7 +160,7 @@ def run_batch_translation(
                         {
                             "role": "user",
                             "content": (
-                                f"Please translate again for a better version.\n"
+                                f"Please translate again for a better version. Return only the translation result.\n\n{tgt_lang}: "
                             ),
                         }
                     )
@@ -300,9 +315,21 @@ def main() -> None:
     parser.add_argument("--comet-kiwi-model", default="Unbabel/wmt22-cometkiwi-da", help="COMETKiwi model name")
 
     parser.add_argument("--max-tokens", type=int, default=512, help="Maximum output tokens")
-    parser.add_argument("--decoding", choices=["sampling", "greedy"], default="sampling", help="Decoding strategy")
+    parser.add_argument(
+        "--decoding",
+        choices=["sampling", "greedy", "beam_search"],
+        default="sampling",
+        help="Decoding strategy",
+    )
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
     parser.add_argument("--top-p", type=float, default=0.95, help="Top-p for sampling decoding")
+    parser.add_argument("--beam-width", type=int, default=4, help="Beam width (for beam_search)")
+    parser.add_argument("--length-penalty", type=float, default=1.0, help="Length penalty (for beam_search)")
+    parser.add_argument(
+        "--early-stopping",
+        action="store_true",
+        help="Enable early stopping in beam search",
+    )
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     parser.add_argument("--max-model-len", type=int, default=4096)
     args = parser.parse_args()
@@ -349,6 +376,9 @@ def main() -> None:
         temperature=args.temperature,
         top_p=args.top_p,
         decoding=args.decoding,
+        beam_width=args.beam_width,
+        length_penalty=args.length_penalty,
+        early_stopping=args.early_stopping,
         batch_size=args.batch_size,
         num_rounds=args.num_rounds,
     )
