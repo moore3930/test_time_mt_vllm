@@ -44,34 +44,6 @@ def build_prompt(tokenizer: AutoTokenizer, text: str, src_lang: str, tgt_lang: s
     )
 
 
-def build_refine_prompt(
-    tokenizer: AutoTokenizer,
-    source_text: str,
-    hypo_1: str,
-    src_lang: str,
-    tgt_lang: str,
-) -> str:
-    messages = [
-        {
-            "role": "system",
-            "content": "You are a professional translator. Return only the final improved translation.",
-        },
-        {
-            "role": "user",
-            "content": (
-                f"Source ({src_lang}):\n{source_text}\n\n"
-                f"First translation ({tgt_lang}):\n{hypo_1}\n\n"
-                f"Translate again and output a better {tgt_lang} translation."
-            ),
-        },
-    ]
-    return tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-    )
-
-
 def batched(items: List[Dict], batch_size: int) -> Iterable[List[Dict]]:
     if batch_size <= 0:
         raise ValueError("--batch-size must be > 0")
@@ -132,7 +104,7 @@ def run_batch_translation(
     )
     results: List[Dict] = []
     for chunk in batched(items, batch_size):
-        first_round_prompts = [
+        prompts = [
             build_prompt(
                 tokenizer=tokenizer,
                 text=item["source_text"],
@@ -141,29 +113,14 @@ def run_batch_translation(
             )
             for item in chunk
         ]
-        first_round_outputs = llm.generate(first_round_prompts, sampling)
-        hypo_1_texts = [output.outputs[0].text.strip() for output in first_round_outputs]
-
-        second_round_prompts = [
-            build_refine_prompt(
-                tokenizer=tokenizer,
-                source_text=item["source_text"],
-                hypo_1=hypo_1,
-                src_lang=src_lang,
-                tgt_lang=tgt_lang,
-            )
-            for item, hypo_1 in zip(chunk, hypo_1_texts)
-        ]
-        second_round_outputs = llm.generate(second_round_prompts, sampling)
-
-        for item, hypo_1, output in zip(chunk, hypo_1_texts, second_round_outputs):
+        outputs = llm.generate(prompts, sampling)
+        for item, output in zip(chunk, outputs):
             results.append(
                 {
                     "id": item["id"],
                     "source_text": item["source_text"],
                     "reference_text": item["reference_text"],
-                    "hypo_1": hypo_1,
-                    "hypo_2": output.outputs[0].text.strip(),
+                    "prediction": output.outputs[0].text.strip(),
                 }
             )
     return results
@@ -259,10 +216,7 @@ def main() -> None:
     print(f"Saved {len(results)} translations to {args.output_jsonl}")
     print("Preview:")
     for row in results[:3]:
-        print(
-            f"- id={row['id']} src={row['source_text'][:40]!r} "
-            f"hypo_1={row['hypo_1'][:40]!r} hypo_2={row['hypo_2'][:60]!r}"
-        )
+        print(f"- id={row['id']} src={row['source_text'][:40]!r} pred={row['prediction'][:60]!r}")
 
 
 if __name__ == "__main__":
