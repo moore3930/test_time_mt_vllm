@@ -34,7 +34,7 @@ def build_first_turn_messages(text: str, src_lang: str, tgt_lang: str) -> List[D
         },
         {
             "role": "user",
-            "content": f"Translate the following text from {src_lang} to {tgt_lang}:\n\n{text}",
+            "content": f"Translate the following text from {src_lang} to {tgt_lang}:\n\n{src_lang}: {text}\n{tgt_lang}: ",
         },
     ]
 
@@ -134,8 +134,7 @@ def run_batch_translation(
                         {
                             "role": "user",
                             "content": (
-                                f"Translate again for a better version.\n"
-                                f"Return only the improved {tgt_lang} translation."
+                                f"Please translate again for a better version.\n"
                             ),
                         }
                     )
