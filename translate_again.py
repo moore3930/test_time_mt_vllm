@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Dict, Iterable, List
 
@@ -96,6 +97,8 @@ def run_batch_translation(
     tgt_lang: str,
     max_tokens: int,
     temperature: float,
+    top_p: float,
+    decoding: str,
     batch_size: int,
     num_rounds: int,
 ) -> List[Dict]:
@@ -104,11 +107,19 @@ def run_batch_translation(
     if num_rounds <= 0:
         raise ValueError("--num-rounds must be > 0")
 
-    sampling = SamplingParams(
-        temperature=temperature,
-        top_p=0.95,
-        max_tokens=max_tokens,
-    )
+    if decoding == "greedy":
+        sampling = SamplingParams(
+            temperature=0.0,
+            top_p=1.0,
+            max_tokens=max_tokens,
+        )
+    else:
+        sampling = SamplingParams(
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+        )
+
     results: List[Dict] = []
     for chunk in batched(items, batch_size):
         messages_per_item: List[List[Dict[str, str]]] = [
@@ -155,6 +166,20 @@ def save_jsonl(path: str, rows: List[Dict]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _sanitize_for_filename(text: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9._-]+", "_", text).strip("_")
+
+
+def build_output_jsonl_path(results_dir: str, model: str, temperature: float, decoding: str) -> Path:
+    model_name = _sanitize_for_filename(model.replace("/", "__"))
+    temp_name = _sanitize_for_filename(f"{temperature:.3f}")
+    decode_name = _sanitize_for_filename(decoding)
+    filename = f"translations__model-{model_name}__temp-{temp_name}__decode-{decode_name}.jsonl"
+    out_dir = Path(results_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / filename
 
 
 def print_round_average_scores(rows: List[Dict], num_rounds: int) -> None:
@@ -268,14 +293,16 @@ def main() -> None:
     parser.add_argument("--max-samples", type=int, default=1024, help="Maximum dataset samples to translate")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size for vLLM generation")
     parser.add_argument("--num-rounds", type=int, default=4, help="Total translation rounds in one chat context")
-    parser.add_argument("--output-jsonl", default="translations.jsonl", help="Output path for dataset mode")
+    parser.add_argument("--results-dir", default="results", help="Directory to save result jsonl files")
     parser.add_argument("--score-batch-size", type=int, default=32, help="Batch size for COMET/COMETKiwi scoring")
     parser.add_argument("--comet-gpus", type=int, default=1, help="GPU count used by COMET/COMETKiwi; set 0 for CPU")
     parser.add_argument("--comet-model", default="Unbabel/wmt22-comet-da", help="COMET model name")
     parser.add_argument("--comet-kiwi-model", default="Unbabel/wmt22-cometkiwi-da", help="COMETKiwi model name")
 
     parser.add_argument("--max-tokens", type=int, default=512, help="Maximum output tokens")
+    parser.add_argument("--decoding", choices=["sampling", "greedy"], default="sampling", help="Decoding strategy")
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
+    parser.add_argument("--top-p", type=float, default=0.95, help="Top-p for sampling decoding")
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     parser.add_argument("--max-model-len", type=int, default=4096)
     args = parser.parse_args()
@@ -320,6 +347,8 @@ def main() -> None:
         tgt_lang=tgt_lang,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
+        top_p=args.top_p,
+        decoding=args.decoding,
         batch_size=args.batch_size,
         num_rounds=args.num_rounds,
     )
@@ -331,8 +360,14 @@ def main() -> None:
         comet_kiwi_model_name=args.comet_kiwi_model,
         comet_gpus=args.comet_gpus,
     )
-    save_jsonl(args.output_jsonl, results)
-    print(f"Saved {len(results)} translations to {args.output_jsonl}")
+    output_path = build_output_jsonl_path(
+        results_dir=args.results_dir,
+        model=args.model,
+        temperature=args.temperature,
+        decoding=args.decoding,
+    )
+    save_jsonl(str(output_path), results)
+    print(f"Saved {len(results)} translations to {output_path}")
     print("Preview:")
     for row in results[:3]:
         hypo_preview = " ".join([f"hypo_{i}={row[f'hypo_{i}'][:28]!r}" for i in range(1, args.num_rounds + 1)])
