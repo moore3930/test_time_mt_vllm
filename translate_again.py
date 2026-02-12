@@ -134,7 +134,7 @@ def run_batch_translation(
                         {
                             "role": "user",
                             "content": (
-                                f"Translate again again for a better version.\n"
+                                f"Translate again for a better version.\n"
                                 f"Return only the improved {tgt_lang} translation."
                             ),
                         }
@@ -156,6 +156,74 @@ def save_jsonl(path: str, rows: List[Dict]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _extract_scores(prediction_result: object) -> List[float]:
+    if hasattr(prediction_result, "scores"):
+        scores = getattr(prediction_result, "scores")
+        if isinstance(scores, list):
+            return [float(x) for x in scores]
+    if isinstance(prediction_result, tuple) and len(prediction_result) > 0:
+        scores = prediction_result[0]
+        if isinstance(scores, list):
+            return [float(x) for x in scores]
+    raise RuntimeError("Unexpected COMET predict output format.")
+
+
+def add_comet_scores(
+    rows: List[Dict],
+    num_rounds: int,
+    score_batch_size: int,
+    comet_model_name: str,
+    comet_kiwi_model_name: str,
+    comet_gpus: int,
+) -> None:
+    try:
+        from comet import download_model, load_from_checkpoint
+    except ModuleNotFoundError as e:
+        missing = e.name or "comet"
+        raise SystemExit(
+            f"Missing dependency: {missing}. Install with: pip install unbabel-comet"
+        ) from e
+
+    comet_model_path = download_model(comet_model_name)
+    comet_kiwi_model_path = download_model(comet_kiwi_model_name)
+    comet_model = load_from_checkpoint(comet_model_path)
+    comet_kiwi_model = load_from_checkpoint(comet_kiwi_model_path)
+
+    for round_idx in range(1, num_rounds + 1):
+        hypo_key = f"hypo_{round_idx}"
+        comet_key = f"comet_{hypo_key}"
+        comet_kiwi_key = f"cometkiwi_{hypo_key}"
+
+        comet_inputs = [
+            {"src": row["source_text"], "mt": row[hypo_key], "ref": row["reference_text"]}
+            for row in rows
+        ]
+        comet_kiwi_inputs = [{"src": row["source_text"], "mt": row[hypo_key]} for row in rows]
+
+        comet_pred = comet_model.predict(
+            comet_inputs,
+            batch_size=score_batch_size,
+            gpus=comet_gpus,
+            progress_bar=True,
+        )
+        comet_kiwi_pred = comet_kiwi_model.predict(
+            comet_kiwi_inputs,
+            batch_size=score_batch_size,
+            gpus=comet_gpus,
+            progress_bar=True,
+        )
+
+        comet_scores = _extract_scores(comet_pred)
+        comet_kiwi_scores = _extract_scores(comet_kiwi_pred)
+
+        if len(comet_scores) != len(rows) or len(comet_kiwi_scores) != len(rows):
+            raise RuntimeError("COMET score count mismatch with translation rows.")
+
+        for row, comet_score, comet_kiwi_score in zip(rows, comet_scores, comet_kiwi_scores):
+            row[comet_key] = comet_score
+            row[comet_kiwi_key] = comet_kiwi_score
 
 
 def infer_pair_settings(
@@ -190,6 +258,10 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size for vLLM generation")
     parser.add_argument("--num-rounds", type=int, default=4, help="Total translation rounds in one chat context")
     parser.add_argument("--output-jsonl", default="translations.jsonl", help="Output path for dataset mode")
+    parser.add_argument("--score-batch-size", type=int, default=32, help="Batch size for COMET/COMETKiwi scoring")
+    parser.add_argument("--comet-gpus", type=int, default=1, help="GPU count used by COMET/COMETKiwi; set 0 for CPU")
+    parser.add_argument("--comet-model", default="Unbabel/wmt22-comet-da", help="COMET model name")
+    parser.add_argument("--comet-kiwi-model", default="Unbabel/wmt22-cometkiwi-da", help="COMETKiwi model name")
 
     parser.add_argument("--max-tokens", type=int, default=512, help="Maximum output tokens")
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
@@ -240,13 +312,27 @@ def main() -> None:
         batch_size=args.batch_size,
         num_rounds=args.num_rounds,
     )
+    add_comet_scores(
+        rows=results,
+        num_rounds=args.num_rounds,
+        score_batch_size=args.score_batch_size,
+        comet_model_name=args.comet_model,
+        comet_kiwi_model_name=args.comet_kiwi_model,
+        comet_gpus=args.comet_gpus,
+    )
     save_jsonl(args.output_jsonl, results)
     print(f"Saved {len(results)} translations to {args.output_jsonl}")
     print("Preview:")
     for row in results[:3]:
         hypo_preview = " ".join([f"hypo_{i}={row[f'hypo_{i}'][:28]!r}" for i in range(1, args.num_rounds + 1)])
+        score_preview = " ".join(
+            [
+                f"comet_hypo_{i}={row[f'comet_hypo_{i}']:.4f} cometkiwi_hypo_{i}={row[f'cometkiwi_hypo_{i}']:.4f}"
+                for i in range(1, args.num_rounds + 1)
+            ]
+        )
         print(
-            f"- id={row['id']} src={row['source_text'][:40]!r} {hypo_preview}"
+            f"- id={row['id']} src={row['source_text'][:40]!r} {hypo_preview} {score_preview}"
         )
 
 
