@@ -64,6 +64,22 @@ def batched(items: List[Dict], batch_size: int) -> Iterable[List[Dict]]:
         yield items[i : i + batch_size]
 
 
+def _build_sampling_params_compat(SamplingParams: object, **kwargs: object) -> object:
+    # Compatibility across vLLM versions that may reject specific kwargs.
+    params = dict(kwargs)
+    while True:
+        try:
+            return SamplingParams(**params)
+        except TypeError as e:
+            match = re.search(r"Unexpected keyword argument '([^']+)'", str(e))
+            if not match:
+                raise
+            bad_key = match.group(1)
+            if bad_key not in params:
+                raise
+            params.pop(bad_key)
+
+
 def load_local_pair_inputs(
     dataset_root: str,
     lang_pair: str,
@@ -129,7 +145,8 @@ def run_batch_translation(
     elif decoding == "beam_search":
         if beam_width < 1:
             raise ValueError("--beam-width must be >= 1")
-        sampling = SamplingParams(
+        sampling = _build_sampling_params_compat(
+            SamplingParams,
             use_beam_search=True,
             best_of=beam_width,
             temperature=temperature,
