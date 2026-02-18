@@ -421,7 +421,7 @@ def main() -> None:
     )
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
     parser.add_argument("--top-p", type=float, default=0.95, help="Top-p for sampling decoding")
-    parser.add_argument("--beam-width", type=int, default=4, help="Beam width (for beam_search)")
+    parser.add_argument("--beam-width", type=int, default=1, help="Beam width (for beam_search)")
     parser.add_argument("--length-penalty", type=float, default=1.0, help="Length penalty (for beam_search)")
     parser.add_argument(
         "--early-stopping",
