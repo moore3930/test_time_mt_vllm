@@ -229,12 +229,27 @@ def build_output_jsonl_path(
     lang_pair: str,
     model: str,
     decoding: str,
+    temperature: float,
+    top_p: float,
+    beam_width: int,
+    length_penalty: float,
+    early_stopping: bool,
 ) -> Path:
     pair_name = _sanitize_for_filename(lang_pair)
     model_name = _sanitize_for_filename(model)
     decode_name = _sanitize_for_filename(decoding)
+    if decoding == "sampling":
+        hypo_name = f"hypo_temp-{temperature:.3f}_top-p-{top_p:.3f}"
+    elif decoding == "beam_search":
+        hypo_name = (
+            f"hypo_temp-{temperature:.3f}_beam-{beam_width}_"
+            f"len-pen-{length_penalty:.3f}_early-stop-{int(early_stopping)}"
+        )
+    else:
+        hypo_name = "hypo_greedy"
+    hypo_name = _sanitize_for_filename(hypo_name)
     filename = f"{pair_name}.jsonl"
-    out_dir = Path(results_dir) / model_name / decode_name
+    out_dir = Path(results_dir) / model_name / decode_name / hypo_name
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir / filename
 
@@ -477,6 +492,11 @@ def main() -> None:
             lang_pair=lang_pair,
             model=args.model,
             decoding=args.decoding,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            beam_width=args.beam_width,
+            length_penalty=args.length_penalty,
+            early_stopping=args.early_stopping,
         )
         summary_row = build_summary_row(results, args.num_rounds, args)
         rows_to_save = [*results, msg_example, summary_row]
