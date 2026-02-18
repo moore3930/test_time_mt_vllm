@@ -206,7 +206,7 @@ def run_batch_translation(
             results.append(row)
             
         # debug
-        break
+        # break
     
     # debug
     message_example = messages_per_item[0]
