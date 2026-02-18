@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import re
 from pathlib import Path
@@ -338,6 +339,20 @@ def _get_comet_model(model_name: str) -> object:
     return model
 
 
+def _release_comet_model(model_name: str) -> None:
+    model = _COMET_MODEL_CACHE.pop(model_name, None)
+    if model is not None:
+        del model
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ModuleNotFoundError:
+        pass
+
+
 def add_comet_scores(
     rows: List[Dict],
     num_rounds: int,
@@ -379,6 +394,9 @@ def add_comet_scores(
 
             for row, score in zip(rows, scores):
                 row[score_key] = score
+
+        # Avoid GPU memory accumulation across multiple metric models.
+        _release_comet_model(model_name)
 
 
 def infer_pair_settings(
