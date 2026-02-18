@@ -77,18 +77,44 @@ def print_report(grouped: Dict[Tuple[str, str], Dict[str, Dict[str, Dict[int, fl
             if not rounds:
                 continue
             print(f"  Metric: {metric}")
-            for round_idx in rounds:
-                scores: List[float] = []
-                for language in sorted(lang_data.keys()):
-                    round_map = lang_data[language].get(metric, {})
-                    if round_idx not in round_map:
-                        continue
-                    score = round_map[round_idx]
-                    scores.append(score)
-                    print(f"    round {round_idx} | {language}: {score:.4f}")
-                if scores:
-                    all_lang_avg = sum(scores) / len(scores)
-                    print(f"    round {round_idx} | all_languages_avg: {all_lang_avg:.4f}")
+
+            headers = ["language", *[f"round_{r}" for r in rounds]]
+            languages = sorted(lang_data.keys())
+            rows: List[List[str]] = []
+            all_lang_scores_by_round: Dict[int, List[float]] = {r: [] for r in rounds}
+
+            for language in languages:
+                round_map = lang_data[language].get(metric, {})
+                row = [language]
+                for r in rounds:
+                    if r in round_map:
+                        score = round_map[r]
+                        all_lang_scores_by_round[r].append(score)
+                        row.append(f"{score:.4f}")
+                    else:
+                        row.append("-")
+                rows.append(row)
+
+            avg_row = ["all_languages_avg"]
+            for r in rounds:
+                scores = all_lang_scores_by_round[r]
+                avg_row.append(f"{(sum(scores) / len(scores)):.4f}" if scores else "-")
+            rows.append(avg_row)
+
+            col_widths = []
+            for i, header in enumerate(headers):
+                width = len(header)
+                for row in rows:
+                    width = max(width, len(row[i]))
+                col_widths.append(width)
+
+            def fmt(row: List[str]) -> str:
+                return " | ".join(cell.ljust(col_widths[i]) for i, cell in enumerate(row))
+
+            print(f"    {fmt(headers)}")
+            print(f"    {'-+-'.join('-' * w for w in col_widths)}")
+            for row in rows:
+                print(f"    {fmt(row)}")
             print()
         print("-" * 60)
 
