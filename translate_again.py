@@ -31,7 +31,8 @@ def build_first_turn_messages(text: str, src_lang: str, tgt_lang: str) -> List[D
     return [
         {
             "role": "system",
-            "content": "You are a professional translator. Return only the translation result.",
+            "content": "You are a professional translator. Your will be ask to conduct translation-related tasks. Output ONLY the "
+            "transaltion segment - do NOT generate additional content.",
         },
         {
             "role": "user",
