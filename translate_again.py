@@ -32,7 +32,7 @@ def build_first_turn_messages(text: str, src_lang: str, tgt_lang: str) -> List[D
         {
             "role": "system",
             "content": "You are a professional translator. Your will be ask to conduct translation-related tasks. Output ONLY the "
-            "transaltion segment - do NOT generate additional content.",
+            "transaltion segment - do NOT generate additional content. Do not include any <think> tags. Do not show your reasoning.",
         },
         {
             "role": "user",
@@ -207,12 +207,17 @@ def _sanitize_for_filename(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9._-]+", "_", text).strip("_")
 
 
-def build_output_jsonl_path(results_dir: str, model: str, temperature: float, decoding: str) -> Path:
-    model_name = _sanitize_for_filename(model.replace("/", "__"))
-    temp_name = _sanitize_for_filename(f"{temperature:.3f}")
+def build_output_jsonl_path(
+    results_dir: str,
+    lang_pair: str,
+    model: str,
+    decoding: str,
+) -> Path:
+    pair_name = _sanitize_for_filename(lang_pair)
+    model_name = _sanitize_for_filename(model)
     decode_name = _sanitize_for_filename(decoding)
-    filename = f"translations__model-{model_name}__temp-{temp_name}__decode-{decode_name}.jsonl"
-    out_dir = Path(results_dir)
+    filename = f"{pair_name}.jsonl"
+    out_dir = Path(results_dir) / model_name / decode_name
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir / filename
 
@@ -339,32 +344,33 @@ def add_comet_scores(
 
 def infer_pair_settings(
     lang_pair: str,
-    src_key_override: str | None,
-    tgt_key_override: str | None,
-    src_lang_override: str | None,
-    tgt_lang_override: str | None,
 ) -> tuple[str, str, str, str]:
     parts = lang_pair.split("-")
     if len(parts) != 2 or not parts[0] or not parts[1]:
         raise ValueError(f"Invalid --lang-pair: {lang_pair}. Expected format like en-zh.")
-    inferred_src_key, inferred_tgt_key = parts[0], parts[1]
-    src_key = src_key_override or inferred_src_key
-    tgt_key = tgt_key_override or inferred_tgt_key
-    src_lang = src_lang_override or LANG_NAME_MAP.get(src_key, src_key)
-    tgt_lang = tgt_lang_override or LANG_NAME_MAP.get(tgt_key, tgt_key)
+    src_key, tgt_key = parts[0], parts[1]
+    src_lang = LANG_NAME_MAP.get(src_key, src_key)
+    tgt_lang = LANG_NAME_MAP.get(tgt_key, tgt_key)
     return src_key, tgt_key, src_lang, tgt_lang
+
+
+def parse_lang_pairs(lang_pairs: str) -> List[str]:
+    pairs = [x.strip() for x in lang_pairs.split(",") if x.strip()]
+    if not pairs:
+        raise ValueError("Invalid --lang-pairs: provide at least one pair like en-zh,en-ru.")
+    return pairs
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Translate text using vLLM + Gemma 3 4B IT")
     parser.add_argument("--model", default="google/gemma-3-4b-it", help="Hugging Face model id")
-    parser.add_argument("--src-lang", help="Source language (optional override)")
-    parser.add_argument("--tgt-lang", help="Target language (optional override)")
-    parser.add_argument("--src-key", help="Source language key (optional override)")
-    parser.add_argument("--tgt-key", help="Target language key (optional override)")
 
     parser.add_argument("--dataset-root", default="datasets/wmt24pp/test", help="Local dataset root directory")
-    parser.add_argument("--lang-pair", required=True, help="Language pair folder name, e.g. en-zh")
+    parser.add_argument(
+        "--lang-pairs",
+        required=True,
+        help="Comma-separated language pairs, e.g. en-zh,en-ru,en-nl",
+    )
     parser.add_argument("--max-samples", type=int, default=1024, help="Maximum dataset samples to translate")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size for vLLM generation")
     parser.add_argument("--num-rounds", type=int, default=4, help="Total translation rounds in one chat context")
@@ -402,13 +408,7 @@ def main() -> None:
         missing = e.name or "required package"
         raise SystemExit(f"Missing dependency: {missing}. Install with: pip install transformers vllm") from e
 
-    src_key, tgt_key, src_lang, tgt_lang = infer_pair_settings(
-        lang_pair=args.lang_pair,
-        src_key_override=args.src_key,
-        tgt_key_override=args.tgt_key,
-        src_lang_override=args.src_lang,
-        tgt_lang_override=args.tgt_lang,
-    )
+    lang_pairs = parse_lang_pairs(args.lang_pairs)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     llm = LLM(
@@ -417,64 +417,67 @@ def main() -> None:
         max_model_len=args.max_model_len,
     )
 
-    items = load_local_pair_inputs(
-        dataset_root=args.dataset_root,
-        lang_pair=args.lang_pair,
-        src_key=src_key,
-        tgt_key=tgt_key,
-        max_samples=args.max_samples,
-    )
-    if not items:
-        raise ValueError("No valid samples found. Check language keys/columns and split.")
+    for lang_pair in lang_pairs:
+        src_key, tgt_key, src_lang, tgt_lang = infer_pair_settings(lang_pair=lang_pair)
 
-    results, msg_example = run_batch_translation(
-        llm=llm,
-        tokenizer=tokenizer,
-        items=items,
-        src_lang=src_lang,
-        tgt_lang=tgt_lang,
-        max_tokens=args.max_tokens,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        decoding=args.decoding,
-        beam_width=args.beam_width,
-        length_penalty=args.length_penalty,
-        early_stopping=args.early_stopping,
-        batch_size=args.batch_size,
-        num_rounds=args.num_rounds,
-        disable_thinking=disable_thinking,
-    )
-    add_comet_scores(
-        rows=results,
-        num_rounds=args.num_rounds,
-        score_batch_size=args.score_batch_size,
-        comet_model_name=args.comet_model,
-        comet_kiwi_model_name=args.comet_kiwi_model,
-        comet_gpus=args.comet_gpus,
-    )
-    output_path = build_output_jsonl_path(
-        results_dir=args.results_dir,
-        model=args.model,
-        temperature=args.temperature,
-        decoding=args.decoding,
-    )
-    summary_row = build_summary_row(results, args.num_rounds, args)
-    rows_to_save = [*results, msg_example, summary_row]
-    save_jsonl(str(output_path), rows_to_save)
-    print(f"Saved {len(results)} translations to {output_path}")
-    print("Preview:")
-    for row in results[:3]:
-        hypo_preview = " ".join([f"hypo_{i}={row[f'hypo_{i}'][:28]!r}" for i in range(1, args.num_rounds + 1)])
-        score_preview = " ".join(
-            [
-                f"comet_hypo_{i}={row[f'comet_hypo_{i}']:.4f} cometkiwi_hypo_{i}={row[f'cometkiwi_hypo_{i}']:.4f}"
-                for i in range(1, args.num_rounds + 1)
-            ]
+        items = load_local_pair_inputs(
+            dataset_root=args.dataset_root,
+            lang_pair=lang_pair,
+            src_key=src_key,
+            tgt_key=tgt_key,
+            max_samples=args.max_samples,
         )
-        print(
-            f"- id={row['id']} src={row['source_text'][:40]!r} {hypo_preview} {score_preview}"
+        if not items:
+            raise ValueError(f"No valid samples found for {lang_pair}. Check language keys/columns and split.")
+
+        results, msg_example = run_batch_translation(
+            llm=llm,
+            tokenizer=tokenizer,
+            items=items,
+            src_lang=src_lang,
+            tgt_lang=tgt_lang,
+            max_tokens=args.max_tokens,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            decoding=args.decoding,
+            beam_width=args.beam_width,
+            length_penalty=args.length_penalty,
+            early_stopping=args.early_stopping,
+            batch_size=args.batch_size,
+            num_rounds=args.num_rounds,
+            disable_thinking=disable_thinking,
         )
-    print_round_average_scores(results, args.num_rounds)
+        add_comet_scores(
+            rows=results,
+            num_rounds=args.num_rounds,
+            score_batch_size=args.score_batch_size,
+            comet_model_name=args.comet_model,
+            comet_kiwi_model_name=args.comet_kiwi_model,
+            comet_gpus=args.comet_gpus,
+        )
+        output_path = build_output_jsonl_path(
+            results_dir=args.results_dir,
+            lang_pair=lang_pair,
+            model=args.model,
+            decoding=args.decoding,
+        )
+        summary_row = build_summary_row(results, args.num_rounds, args)
+        rows_to_save = [*results, msg_example, summary_row]
+        save_jsonl(str(output_path), rows_to_save)
+        print(f"[{lang_pair}] Saved {len(results)} translations to {output_path}")
+        print(f"[{lang_pair}] Preview:")
+        for row in results[:3]:
+            hypo_preview = " ".join([f"hypo_{i}={row[f'hypo_{i}'][:28]!r}" for i in range(1, args.num_rounds + 1)])
+            score_preview = " ".join(
+                [
+                    f"comet_hypo_{i}={row[f'comet_hypo_{i}']:.4f} cometkiwi_hypo_{i}={row[f'cometkiwi_hypo_{i}']:.4f}"
+                    for i in range(1, args.num_rounds + 1)
+                ]
+            )
+            print(
+                f"- id={row['id']} src={row['source_text'][:40]!r} {hypo_preview} {score_preview}"
+            )
+        print_round_average_scores(results, args.num_rounds)
 
 
 if __name__ == "__main__":
