@@ -41,11 +41,19 @@ def build_first_turn_messages(text: str, src_lang: str, tgt_lang: str) -> List[D
     ]
 
 
-def render_chat_prompt(tokenizer: AutoTokenizer, messages: List[Dict[str, str]]) -> str:
+def render_chat_prompt(
+    tokenizer: AutoTokenizer,
+    messages: List[Dict[str, str]],
+    disable_thinking: bool = False,
+) -> str:
+    template_kwargs: Dict[str, object] = {}
+    if disable_thinking:
+        template_kwargs["enable_thinking"] = False
     return tokenizer.apply_chat_template(
         messages,
         tokenize=False,
         add_generation_prompt=True,
+        **template_kwargs,
     )
 
 
@@ -105,6 +113,7 @@ def run_batch_translation(
     early_stopping: bool,
     batch_size: int,
     num_rounds: int,
+    disable_thinking: bool = False,
 ) -> List[Dict]:
     from vllm import SamplingParams
 
@@ -149,7 +158,10 @@ def run_batch_translation(
         round_predictions_per_item: List[List[str]] = [[] for _ in chunk]
 
         for round_idx in range(1, num_rounds + 1):
-            prompts = [render_chat_prompt(tokenizer, messages) for messages in messages_per_item]
+            prompts = [
+                render_chat_prompt(tokenizer, messages, disable_thinking=disable_thinking)
+                for messages in messages_per_item
+            ]
             outputs = llm.generate(prompts, sampling)
             round_texts = [output.outputs[0].text.strip() for output in outputs]
 
@@ -381,6 +393,7 @@ def main() -> None:
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     parser.add_argument("--max-model-len", type=int, default=4096)
     args = parser.parse_args()
+    disable_thinking = "qwen3" in args.model.lower()
 
     try:
         from transformers import AutoTokenizer
@@ -429,6 +442,7 @@ def main() -> None:
         early_stopping=args.early_stopping,
         batch_size=args.batch_size,
         num_rounds=args.num_rounds,
+        disable_thinking=disable_thinking,
     )
     add_comet_scores(
         rows=results,
