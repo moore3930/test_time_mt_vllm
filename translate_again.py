@@ -363,6 +363,8 @@ def add_comet_scores(
 ) -> None:
     if not rows:
         return
+    if score_batch_size <= 0:
+        raise ValueError("score batch size must be > 0")
 
     for metric_name in metric_models:
         spec = METRIC_MODEL_SPECS[metric_name]
@@ -445,23 +447,12 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size for vLLM generation")
     parser.add_argument("--num-rounds", type=int, default=4, help="Total translation rounds in one chat context")
     parser.add_argument("--results-dir", default="results", help="Directory to save result jsonl files")
-    parser.add_argument("--score-batch-size", type=int, default=32, help="Batch size for COMET/COMETKiwi scoring")
+    parser.add_argument("--score-batch-size", type=int, default=8, help="Batch size for metric scoring")
     parser.add_argument("--comet-gpus", type=int, default=1, help="GPU count used by COMET/COMETKiwi; set 0 for CPU")
     parser.add_argument(
         "--metric-models",
         default="comet,comet-kiwi,comet-kiwi-xl",
         help="Comma-separated metric model aliases to run in order, e.g. comet,comet-kiwi,comet-kiwi-xl",
-    )
-    parser.add_argument("--comet-model", default=str(METRIC_MODEL_SPECS["comet"]["default_model"]), help="COMET model name")
-    parser.add_argument(
-        "--comet-kiwi-model",
-        default=str(METRIC_MODEL_SPECS["comet-kiwi"]["default_model"]),
-        help="COMETKiwi model name",
-    )
-    parser.add_argument(
-        "--comet-kiwi-xl-model",
-        default=str(METRIC_MODEL_SPECS["comet-kiwi-xl"]["default_model"]),
-        help="COMETKiwi-XL model name",
     )
 
     parser.add_argument("--max-tokens", type=int, default=512, help="Maximum output tokens")
@@ -497,9 +488,8 @@ def main() -> None:
     lang_pairs = parse_lang_pairs(args.lang_pairs)
     metric_models = parse_metric_models(args.metric_models)
     metric_model_name_map = {
-        "comet": args.comet_model,
-        "comet-kiwi": args.comet_kiwi_model,
-        "comet-kiwi-xl": args.comet_kiwi_xl_model,
+        name: str(METRIC_MODEL_SPECS[name]["default_model"])
+        for name in METRIC_MODEL_SPECS
     }
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
