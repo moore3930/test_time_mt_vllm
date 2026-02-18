@@ -174,6 +174,9 @@ def run_batch_translation(
             for i, text in enumerate(round_texts, start=1):
                 row[f"hypo_{i}"] = text
             results.append(row)
+            
+        # debug
+        break
     
     # debug
     message_example = messages_per_item[0]
