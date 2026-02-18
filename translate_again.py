@@ -132,7 +132,7 @@ def run_batch_translation(
         sampling = SamplingParams(
             use_beam_search=True,
             best_of=beam_width,
-            temperature=0.0,
+            temperature=temperature,
             top_p=1.0,
             length_penalty=length_penalty,
             early_stopping=early_stopping,
@@ -173,7 +173,7 @@ def run_batch_translation(
                         {
                             "role": "user",
                             "content": (
-                                f"Please translate again for a better version. Return only the translation result.\n\n{tgt_lang}: "
+                                f"Please translate again for a better version: "
                             ),
                         }
                     )
