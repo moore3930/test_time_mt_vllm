@@ -6,7 +6,7 @@ import argparse
 import json
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Tuple
 
 LANG_NAME_MAP = {
     "en": "English",
@@ -174,7 +174,11 @@ def run_batch_translation(
             for i, text in enumerate(round_texts, start=1):
                 row[f"hypo_{i}"] = text
             results.append(row)
-    return results
+    
+    # debug
+    message_example = messages_per_item[0]
+
+    return results, message_example
 
 
 def save_jsonl(path: str, rows: List[Dict]) -> None:
@@ -242,14 +246,14 @@ def _extract_scores(prediction_result: object) -> List[float]:
     raise RuntimeError("Unexpected COMET predict output format.")
 
 
-def add_comet_scores(
-    rows: List[Dict],
-    num_rounds: int,
-    score_batch_size: int,
-    comet_model_name: str,
-    comet_kiwi_model_name: str,
-    comet_gpus: int,
-) -> None:
+_COMET_MODEL_CACHE: Dict[Tuple[str, str], Tuple[object, object]] = {}
+
+
+def _get_comet_models(comet_model_name: str, comet_kiwi_model_name: str) -> Tuple[object, object]:
+    cache_key = (comet_model_name, comet_kiwi_model_name)
+    if cache_key in _COMET_MODEL_CACHE:
+        return _COMET_MODEL_CACHE[cache_key]
+
     try:
         from comet import download_model, load_from_checkpoint
     except ModuleNotFoundError as e:
@@ -262,6 +266,25 @@ def add_comet_scores(
     comet_kiwi_model_path = download_model(comet_kiwi_model_name)
     comet_model = load_from_checkpoint(comet_model_path)
     comet_kiwi_model = load_from_checkpoint(comet_kiwi_model_path)
+    _COMET_MODEL_CACHE[cache_key] = (comet_model, comet_kiwi_model)
+    return comet_model, comet_kiwi_model
+
+
+def add_comet_scores(
+    rows: List[Dict],
+    num_rounds: int,
+    score_batch_size: int,
+    comet_model_name: str,
+    comet_kiwi_model_name: str,
+    comet_gpus: int,
+) -> None:
+    if not rows:
+        return
+
+    comet_model, comet_kiwi_model = _get_comet_models(
+        comet_model_name=comet_model_name,
+        comet_kiwi_model_name=comet_kiwi_model_name,
+    )
 
     for round_idx in range(1, num_rounds + 1):
         hypo_key = f"hypo_{round_idx}"
@@ -387,7 +410,7 @@ def main() -> None:
     if not items:
         raise ValueError("No valid samples found. Check language keys/columns and split.")
 
-    results = run_batch_translation(
+    results, msg_example = run_batch_translation(
         llm=llm,
         tokenizer=tokenizer,
         items=items,
@@ -418,7 +441,7 @@ def main() -> None:
         decoding=args.decoding,
     )
     summary_row = build_summary_row(results, args.num_rounds, args)
-    rows_to_save = [*results, summary_row]
+    rows_to_save = [*results, msg_example, summary_row]
     save_jsonl(str(output_path), rows_to_save)
     print(f"Saved {len(results)} translations to {output_path}")
     print("Preview:")
