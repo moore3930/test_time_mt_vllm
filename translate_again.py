@@ -26,6 +26,27 @@ LANG_NAME_MAP = {
     "is": "Icelandic",
 }
 
+METRIC_MODEL_SPECS = {
+    "comet": {
+        "field_prefix": "comet",
+        "default_model": "Unbabel/wmt22-comet-da",
+        "needs_ref": True,
+        "label": "COMET",
+    },
+    "comet-kiwi": {
+        "field_prefix": "cometkiwi",
+        "default_model": "Unbabel/wmt22-cometkiwi-da",
+        "needs_ref": False,
+        "label": "COMETKiwi",
+    },
+    "comet-kiwi-xl": {
+        "field_prefix": "cometkiwixl",
+        "default_model": "Unbabel/wmt23-cometkiwi-da-xl",
+        "needs_ref": False,
+        "label": "COMETKiwiXL",
+    },
+}
+
 
 def build_first_turn_messages(text: str, src_lang: str, tgt_lang: str) -> List[Dict[str, str]]:
     return [
@@ -62,22 +83,6 @@ def batched(items: List[Dict], batch_size: int) -> Iterable[List[Dict]]:
         raise ValueError("--batch-size must be > 0")
     for i in range(0, len(items), batch_size):
         yield items[i : i + batch_size]
-
-
-def _build_sampling_params_compat(SamplingParams: object, **kwargs: object) -> object:
-    # Compatibility across vLLM versions that may reject specific kwargs.
-    params = dict(kwargs)
-    while True:
-        try:
-            return SamplingParams(**params)
-        except TypeError as e:
-            match = re.search(r"Unexpected keyword argument '([^']+)'", str(e))
-            if not match:
-                raise
-            bad_key = match.group(1)
-            if bad_key not in params:
-                raise
-            params.pop(bad_key)
 
 
 def load_local_pair_inputs(
@@ -145,16 +150,21 @@ def run_batch_translation(
     elif decoding == "beam_search":
         if beam_width < 1:
             raise ValueError("--beam-width must be >= 1")
-        sampling = _build_sampling_params_compat(
-            SamplingParams,
-            use_beam_search=True,
-            best_of=beam_width,
-            temperature=temperature,
-            top_p=1.0,
-            length_penalty=length_penalty,
-            early_stopping=early_stopping,
-            max_tokens=max_tokens,
-        )
+        try:
+            sampling = SamplingParams(
+                use_beam_search=True,
+                best_of=beam_width,
+                temperature=temperature,
+                top_p=1.0,
+                length_penalty=length_penalty,
+                early_stopping=early_stopping,
+                max_tokens=max_tokens,
+            )
+        except TypeError as e:
+            raise RuntimeError(
+                "Beam search was requested, but this vLLM version/config does not support "
+                "`use_beam_search` in SamplingParams. Please upgrade vLLM or use another decoding mode."
+            ) from e
     else:
         sampling = SamplingParams(
             temperature=temperature,
@@ -254,19 +264,26 @@ def build_output_jsonl_path(
     return out_dir / filename
 
 
-def print_round_average_scores(rows: List[Dict], num_rounds: int) -> None:
+def print_round_average_scores(rows: List[Dict], num_rounds: int, metric_models: List[str]) -> None:
     if not rows:
         return
     print("Average scores by round:")
     for i in range(1, num_rounds + 1):
-        comet_key = f"comet_hypo_{i}"
-        comet_kiwi_key = f"cometkiwi_hypo_{i}"
-        comet_avg = sum(float(row[comet_key]) for row in rows) / len(rows)
-        comet_kiwi_avg = sum(float(row[comet_kiwi_key]) for row in rows) / len(rows)
-        print(f"- round {i}: COMET={comet_avg:.4f} COMETKiwi={comet_kiwi_avg:.4f}")
+        score_parts: List[str] = []
+        for metric_name in metric_models:
+            spec = METRIC_MODEL_SPECS[metric_name]
+            key = f"{spec['field_prefix']}_hypo_{i}"
+            avg = sum(float(row[key]) for row in rows) / len(rows)
+            score_parts.append(f"{spec['label']}={avg:.4f}")
+        print(f"- round {i}: {' '.join(score_parts)}")
 
 
-def build_summary_row(rows: List[Dict], num_rounds: int, args: argparse.Namespace) -> Dict:
+def build_summary_row(
+    rows: List[Dict],
+    num_rounds: int,
+    args: argparse.Namespace,
+    metric_models: List[str],
+) -> Dict:
     summary: Dict = {
         "record_type": "summary",
         "num_rows": len(rows),
@@ -278,12 +295,13 @@ def build_summary_row(rows: List[Dict], num_rounds: int, args: argparse.Namespac
         "beam_width": args.beam_width,
         "length_penalty": args.length_penalty,
         "early_stopping": args.early_stopping,
+        "metric_models": metric_models,
     }
     for i in range(1, num_rounds + 1):
-        comet_key = f"comet_hypo_{i}"
-        comet_kiwi_key = f"cometkiwi_hypo_{i}"
-        summary[f"avg_{comet_key}"] = sum(float(row[comet_key]) for row in rows) / len(rows)
-        summary[f"avg_{comet_kiwi_key}"] = sum(float(row[comet_kiwi_key]) for row in rows) / len(rows)
+        for metric_name in metric_models:
+            spec = METRIC_MODEL_SPECS[metric_name]
+            metric_key = f"{spec['field_prefix']}_hypo_{i}"
+            summary[f"avg_{metric_key}"] = sum(float(row[metric_key]) for row in rows) / len(rows)
     return summary
 
 
@@ -299,13 +317,12 @@ def _extract_scores(prediction_result: object) -> List[float]:
     raise RuntimeError("Unexpected COMET predict output format.")
 
 
-_COMET_MODEL_CACHE: Dict[Tuple[str, str], Tuple[object, object]] = {}
+_COMET_MODEL_CACHE: Dict[str, object] = {}
 
 
-def _get_comet_models(comet_model_name: str, comet_kiwi_model_name: str) -> Tuple[object, object]:
-    cache_key = (comet_model_name, comet_kiwi_model_name)
-    if cache_key in _COMET_MODEL_CACHE:
-        return _COMET_MODEL_CACHE[cache_key]
+def _get_comet_model(model_name: str) -> object:
+    if model_name in _COMET_MODEL_CACHE:
+        return _COMET_MODEL_CACHE[model_name]
 
     try:
         from comet import download_model, load_from_checkpoint
@@ -315,63 +332,53 @@ def _get_comet_models(comet_model_name: str, comet_kiwi_model_name: str) -> Tupl
             f"Missing dependency: {missing}. Install with: pip install unbabel-comet"
         ) from e
 
-    comet_model_path = download_model(comet_model_name)
-    comet_kiwi_model_path = download_model(comet_kiwi_model_name)
-    comet_model = load_from_checkpoint(comet_model_path)
-    comet_kiwi_model = load_from_checkpoint(comet_kiwi_model_path)
-    _COMET_MODEL_CACHE[cache_key] = (comet_model, comet_kiwi_model)
-    return comet_model, comet_kiwi_model
+    model_path = download_model(model_name)
+    model = load_from_checkpoint(model_path)
+    _COMET_MODEL_CACHE[model_name] = model
+    return model
 
 
 def add_comet_scores(
     rows: List[Dict],
     num_rounds: int,
     score_batch_size: int,
-    comet_model_name: str,
-    comet_kiwi_model_name: str,
+    metric_models: List[str],
+    metric_model_name_map: Dict[str, str],
     comet_gpus: int,
 ) -> None:
     if not rows:
         return
 
-    comet_model, comet_kiwi_model = _get_comet_models(
-        comet_model_name=comet_model_name,
-        comet_kiwi_model_name=comet_kiwi_model_name,
-    )
+    for metric_name in metric_models:
+        spec = METRIC_MODEL_SPECS[metric_name]
+        field_prefix = str(spec["field_prefix"])
+        model_name = metric_model_name_map[metric_name]
+        needs_ref = bool(spec["needs_ref"])
+        model = _get_comet_model(model_name)
 
-    for round_idx in range(1, num_rounds + 1):
-        hypo_key = f"hypo_{round_idx}"
-        comet_key = f"comet_{hypo_key}"
-        comet_kiwi_key = f"cometkiwi_{hypo_key}"
+        for round_idx in range(1, num_rounds + 1):
+            hypo_key = f"hypo_{round_idx}"
+            score_key = f"{field_prefix}_{hypo_key}"
+            if needs_ref:
+                score_inputs = [
+                    {"src": row["source_text"], "mt": row[hypo_key], "ref": row["reference_text"]}
+                    for row in rows
+                ]
+            else:
+                score_inputs = [{"src": row["source_text"], "mt": row[hypo_key]} for row in rows]
 
-        comet_inputs = [
-            {"src": row["source_text"], "mt": row[hypo_key], "ref": row["reference_text"]}
-            for row in rows
-        ]
-        comet_kiwi_inputs = [{"src": row["source_text"], "mt": row[hypo_key]} for row in rows]
+            pred = model.predict(
+                score_inputs,
+                batch_size=score_batch_size,
+                gpus=comet_gpus,
+                progress_bar=True,
+            )
+            scores = _extract_scores(pred)
+            if len(scores) != len(rows):
+                raise RuntimeError("COMET score count mismatch with translation rows.")
 
-        comet_pred = comet_model.predict(
-            comet_inputs,
-            batch_size=score_batch_size,
-            gpus=comet_gpus,
-            progress_bar=True,
-        )
-        comet_kiwi_pred = comet_kiwi_model.predict(
-            comet_kiwi_inputs,
-            batch_size=score_batch_size,
-            gpus=comet_gpus,
-            progress_bar=True,
-        )
-
-        comet_scores = _extract_scores(comet_pred)
-        comet_kiwi_scores = _extract_scores(comet_kiwi_pred)
-
-        if len(comet_scores) != len(rows) or len(comet_kiwi_scores) != len(rows):
-            raise RuntimeError("COMET score count mismatch with translation rows.")
-
-        for row, comet_score, comet_kiwi_score in zip(rows, comet_scores, comet_kiwi_scores):
-            row[comet_key] = comet_score
-            row[comet_kiwi_key] = comet_kiwi_score
+            for row, score in zip(rows, scores):
+                row[score_key] = score
 
 
 def infer_pair_settings(
@@ -393,6 +400,19 @@ def parse_lang_pairs(lang_pairs: str) -> List[str]:
     return pairs
 
 
+def parse_metric_models(metric_models: str) -> List[str]:
+    models = [x.strip() for x in metric_models.split(",") if x.strip()]
+    if not models:
+        raise ValueError(
+            "Invalid --metric-models: provide at least one value like comet,comet-kiwi,comet-kiwi-xl."
+        )
+    unknown = [m for m in models if m not in METRIC_MODEL_SPECS]
+    if unknown:
+        supported = ", ".join(sorted(METRIC_MODEL_SPECS.keys()))
+        raise ValueError(f"Unsupported metric models: {unknown}. Supported: {supported}")
+    return models
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Translate text using vLLM + Gemma 3 4B IT")
     parser.add_argument("--model", default="google/gemma-3-4b-it", help="Hugging Face model id")
@@ -409,8 +429,22 @@ def main() -> None:
     parser.add_argument("--results-dir", default="results", help="Directory to save result jsonl files")
     parser.add_argument("--score-batch-size", type=int, default=32, help="Batch size for COMET/COMETKiwi scoring")
     parser.add_argument("--comet-gpus", type=int, default=1, help="GPU count used by COMET/COMETKiwi; set 0 for CPU")
-    parser.add_argument("--comet-model", default="Unbabel/wmt22-comet-da", help="COMET model name")
-    parser.add_argument("--comet-kiwi-model", default="Unbabel/wmt22-cometkiwi-da", help="COMETKiwi model name")
+    parser.add_argument(
+        "--metric-models",
+        default="comet,comet-kiwi,comet-kiwi-xl",
+        help="Comma-separated metric model aliases to run in order, e.g. comet,comet-kiwi,comet-kiwi-xl",
+    )
+    parser.add_argument("--comet-model", default=str(METRIC_MODEL_SPECS["comet"]["default_model"]), help="COMET model name")
+    parser.add_argument(
+        "--comet-kiwi-model",
+        default=str(METRIC_MODEL_SPECS["comet-kiwi"]["default_model"]),
+        help="COMETKiwi model name",
+    )
+    parser.add_argument(
+        "--comet-kiwi-xl-model",
+        default=str(METRIC_MODEL_SPECS["comet-kiwi-xl"]["default_model"]),
+        help="COMETKiwi-XL model name",
+    )
 
     parser.add_argument("--max-tokens", type=int, default=512, help="Maximum output tokens")
     parser.add_argument(
@@ -430,6 +464,8 @@ def main() -> None:
     )
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     parser.add_argument("--max-model-len", type=int, default=4096)
+    parser.add_argument("--tensor-parallel-size", type=int, default=1, help="Tensor parallel size for multi-GPU")
+    parser.add_argument("--pipeline-parallel-size", type=int, default=1, help="Pipeline parallel size for multi-GPU")
     args = parser.parse_args()
     disable_thinking = "qwen3" in args.model.lower()
 
@@ -441,12 +477,20 @@ def main() -> None:
         raise SystemExit(f"Missing dependency: {missing}. Install with: pip install transformers vllm") from e
 
     lang_pairs = parse_lang_pairs(args.lang_pairs)
+    metric_models = parse_metric_models(args.metric_models)
+    metric_model_name_map = {
+        "comet": args.comet_model,
+        "comet-kiwi": args.comet_kiwi_model,
+        "comet-kiwi-xl": args.comet_kiwi_xl_model,
+    }
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     llm = LLM(
         model=args.model,
         gpu_memory_utilization=args.gpu_memory_utilization,
         max_model_len=args.max_model_len,
+        tensor_parallel_size=args.tensor_parallel_size,
+        pipeline_parallel_size=args.pipeline_parallel_size,
     )
 
     for lang_pair in lang_pairs:
@@ -483,8 +527,8 @@ def main() -> None:
             rows=results,
             num_rounds=args.num_rounds,
             score_batch_size=args.score_batch_size,
-            comet_model_name=args.comet_model,
-            comet_kiwi_model_name=args.comet_kiwi_model,
+            metric_models=metric_models,
+            metric_model_name_map=metric_model_name_map,
             comet_gpus=args.comet_gpus,
         )
         output_path = build_output_jsonl_path(
@@ -498,23 +542,25 @@ def main() -> None:
             length_penalty=args.length_penalty,
             early_stopping=args.early_stopping,
         )
-        summary_row = build_summary_row(results, args.num_rounds, args)
+        summary_row = build_summary_row(results, args.num_rounds, args, metric_models=metric_models)
         rows_to_save = [*results, msg_example, summary_row]
         save_jsonl(str(output_path), rows_to_save)
         print(f"[{lang_pair}] Saved {len(results)} translations to {output_path}")
         print(f"[{lang_pair}] Preview:")
         for row in results[:3]:
             hypo_preview = " ".join([f"hypo_{i}={row[f'hypo_{i}'][:28]!r}" for i in range(1, args.num_rounds + 1)])
-            score_preview = " ".join(
-                [
-                    f"comet_hypo_{i}={row[f'comet_hypo_{i}']:.4f} cometkiwi_hypo_{i}={row[f'cometkiwi_hypo_{i}']:.4f}"
-                    for i in range(1, args.num_rounds + 1)
-                ]
-            )
+            score_parts: List[str] = []
+            for i in range(1, args.num_rounds + 1):
+                per_round = []
+                for metric_name in metric_models:
+                    field_prefix = str(METRIC_MODEL_SPECS[metric_name]["field_prefix"])
+                    per_round.append(f"{field_prefix}_hypo_{i}={row[f'{field_prefix}_hypo_{i}']:.4f}")
+                score_parts.append(" ".join(per_round))
+            score_preview = " ".join(score_parts)
             print(
                 f"- id={row['id']} src={row['source_text'][:40]!r} {hypo_preview} {score_preview}"
             )
-        print_round_average_scores(results, args.num_rounds)
+        print_round_average_scores(results, args.num_rounds, metric_models=metric_models)
 
 
 if __name__ == "__main__":
