@@ -6,7 +6,7 @@ import gc
 import json
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, List
 
 METRIC_MODEL_SPECS = {
     "comet": {
@@ -31,9 +31,39 @@ METRIC_MODEL_SPECS = {
 
 _COMET_MODEL_CACHE: Dict[str, object] = {}
 
+def _sanitize_for_filename(text: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9._-]+", "_", text).strip("_")
 
-def iter_result_files(results_dir: Path) -> Iterable[Path]:
-    yield from results_dir.glob("*/*/*/*.jsonl")
+
+def parse_lang_pairs(lang_pairs: str) -> List[str]:
+    pairs = [x.strip() for x in lang_pairs.split(",") if x.strip()]
+    if not pairs:
+        raise ValueError("Invalid --lang-pairs: provide at least one pair like en-zh,en-ru.")
+    return pairs
+
+
+def build_result_jsonl_path(
+    base_dir: str,
+    lang_pair: str,
+    model: str,
+    decoding: str,
+    temperature: float,
+    top_p: float,
+    beam_width: int,
+    length_penalty: float,
+    early_stopping: bool,
+) -> Path:
+    pair_name = _sanitize_for_filename(lang_pair)
+    model_name = _sanitize_for_filename(model)
+    decode_name = _sanitize_for_filename(decoding)
+    if decoding == "sampling":
+        hypo_name = f"hypo_temp-{temperature:.3f}_top-p-{top_p:.3f}"
+    elif decoding == "beam_search":
+        hypo_name = f"hypo_temp-{temperature:.3f}_beam-{beam_width}_len-pen-{length_penalty:.3f}_early-stop-{int(early_stopping)}"
+    else:
+        hypo_name = "hypo_greedy"
+    hypo_name = _sanitize_for_filename(hypo_name)
+    return Path(base_dir) / model_name / decode_name / hypo_name / f"{pair_name}.jsonl"
 
 
 def load_jsonl(path: Path) -> List[Dict]:
@@ -174,22 +204,40 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Score raw translations with COMET metric models.")
     parser.add_argument("--input-dir", default="results_raw")
     parser.add_argument("--output-dir", default="results")
+    parser.add_argument("--model", default="google/gemma-3-4b-it")
+    parser.add_argument("--lang-pairs", required=True, help="e.g. en-zh,en-ru,en-nl")
+    parser.add_argument("--decoding", choices=["sampling", "greedy", "beam_search"], default="sampling")
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--top-p", type=float, default=0.95)
+    parser.add_argument("--beam-width", type=int, default=1)
+    parser.add_argument("--length-penalty", type=float, default=1.0)
+    parser.add_argument("--early-stopping", action="store_true")
     parser.add_argument("--score-batch-size", type=int, default=8)
     parser.add_argument("--comet-gpus", type=int, default=1)
     parser.add_argument("--metric-models", default="comet,comet-kiwi,comet-kiwi-xl")
     args = parser.parse_args()
 
     metric_models = parse_metric_models(args.metric_models)
+    lang_pairs = parse_lang_pairs(args.lang_pairs)
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
     if not input_dir.exists():
         raise FileNotFoundError(f"Input directory not found: {input_dir}")
 
-    files = sorted(iter_result_files(input_dir))
-    if not files:
-        raise FileNotFoundError(f"No jsonl files found under: {input_dir}")
-
-    for in_path in files:
+    for lang_pair in lang_pairs:
+        in_path = build_result_jsonl_path(
+            base_dir=args.input_dir,
+            lang_pair=lang_pair,
+            model=args.model,
+            decoding=args.decoding,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            beam_width=args.beam_width,
+            length_penalty=args.length_penalty,
+            early_stopping=args.early_stopping,
+        )
+        if not in_path.exists():
+            raise FileNotFoundError(f"Input file not found for {lang_pair}: {in_path}")
         rows_all = load_jsonl(in_path)
         translation_rows = [r for r in rows_all if isinstance(r, dict) and "id" in r and "hypo_1" in r]
         passthrough_rows = [r for r in rows_all if not (isinstance(r, dict) and "id" in r and "hypo_1" in r)]
@@ -210,10 +258,19 @@ def main() -> None:
             comet_gpus=args.comet_gpus,
         )
         summary_row = build_summary_row(translation_rows, num_rounds, metric_models, existing_summary)
-        rel = in_path.relative_to(input_dir)
-        out_path = output_dir / rel
+        out_path = build_result_jsonl_path(
+            base_dir=args.output_dir,
+            lang_pair=lang_pair,
+            model=args.model,
+            decoding=args.decoding,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            beam_width=args.beam_width,
+            length_penalty=args.length_penalty,
+            early_stopping=args.early_stopping,
+        )
         save_jsonl(out_path, [*translation_rows, *passthrough_rows, summary_row])
-        print(f"Scored: {in_path} -> {out_path}")
+        print(f"[{lang_pair}] Scored: {in_path} -> {out_path}")
 
 
 if __name__ == "__main__":
