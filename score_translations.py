@@ -6,7 +6,7 @@ import gc
 import json
 import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 METRIC_MODEL_SPECS = {
     "comet": {
@@ -52,6 +52,7 @@ def build_result_jsonl_path(
     beam_width: int,
     length_penalty: float,
     early_stopping: bool,
+    noise_name: Optional[str] = None,
 ) -> Path:
     pair_name = _sanitize_for_filename(lang_pair)
     model_name = _sanitize_for_filename(model)
@@ -63,7 +64,88 @@ def build_result_jsonl_path(
     else:
         hypo_name = "hypo_greedy"
     hypo_name = _sanitize_for_filename(hypo_name)
+    if noise_name:
+        return Path(base_dir) / model_name / noise_name / decode_name / hypo_name / f"{pair_name}.jsonl"
     return Path(base_dir) / model_name / decode_name / hypo_name / f"{pair_name}.jsonl"
+
+
+def resolve_input_jsonl_path(
+    base_dir: str,
+    lang_pair: str,
+    model: str,
+    decoding: str,
+    temperature: float,
+    top_p: float,
+    beam_width: int,
+    length_penalty: float,
+    early_stopping: bool,
+    history_noise_ratio: Optional[float],
+) -> tuple[Path, Optional[str]]:
+    model_name = _sanitize_for_filename(model)
+    pair_name = _sanitize_for_filename(lang_pair)
+    explicit_noise_name: Optional[str] = None
+    if history_noise_ratio is not None:
+        explicit_noise_name = _sanitize_for_filename(f"noise-{history_noise_ratio:.3f}")
+
+    candidates: List[tuple[Path, Optional[str]]] = []
+    if explicit_noise_name:
+        candidates.append(
+            (
+                build_result_jsonl_path(
+                    base_dir=base_dir,
+                    lang_pair=lang_pair,
+                    model=model,
+                    decoding=decoding,
+                    temperature=temperature,
+                    top_p=top_p,
+                    beam_width=beam_width,
+                    length_penalty=length_penalty,
+                    early_stopping=early_stopping,
+                    noise_name=explicit_noise_name,
+                ),
+                explicit_noise_name,
+            )
+        )
+    candidates.append(
+        (
+            build_result_jsonl_path(
+                base_dir=base_dir,
+                lang_pair=lang_pair,
+                model=model,
+                decoding=decoding,
+                temperature=temperature,
+                top_p=top_p,
+                beam_width=beam_width,
+                length_penalty=length_penalty,
+                early_stopping=early_stopping,
+                noise_name=None,
+            ),
+            None,
+        )
+    )
+    for path, noise_name in candidates:
+        if path.exists():
+            return path, noise_name
+
+    # Auto-discover new layout when --history-noise-ratio is not provided.
+    if history_noise_ratio is None:
+        legacy_path, _ = candidates[-1]
+        decode_name = legacy_path.parent.parent.name
+        hypo_name = legacy_path.parent.name
+        pair_file = f"{pair_name}.jsonl"
+        discovered = sorted((Path(base_dir) / model_name).glob(f"noise-*/{decode_name}/{hypo_name}/{pair_file}"))
+        if len(discovered) == 1:
+            resolved = discovered[0]
+            return resolved, resolved.parent.parent.parent.name
+        if len(discovered) > 1:
+            choices = ", ".join(p.parent.parent.parent.name for p in discovered)
+            raise ValueError(
+                f"Multiple noise directories matched {lang_pair}: {choices}. "
+                "Please pass --history-noise-ratio to disambiguate."
+            )
+
+    checked = ", ".join(str(p) for p, _ in candidates)
+    raise FileNotFoundError(f"Input file not found for {lang_pair}. Checked: {checked}")
 
 
 def load_jsonl(path: Path) -> List[Dict]:
@@ -189,7 +271,16 @@ def build_summary_row(
         "metric_models": metric_models,
     }
     if isinstance(existing_summary, dict):
-        for k in ["model", "decoding", "temperature", "top_p", "beam_width", "length_penalty", "early_stopping"]:
+        for k in [
+            "model",
+            "decoding",
+            "temperature",
+            "top_p",
+            "beam_width",
+            "length_penalty",
+            "early_stopping",
+            "history_noise_ratio",
+        ]:
             if k in existing_summary:
                 summary[k] = existing_summary[k]
     for i in range(1, num_rounds + 1):
@@ -212,6 +303,12 @@ def main() -> None:
     parser.add_argument("--beam-width", type=int, default=1)
     parser.add_argument("--length-penalty", type=float, default=1.0)
     parser.add_argument("--early-stopping", action="store_true")
+    parser.add_argument(
+        "--history-noise-ratio",
+        type=float,
+        default=None,
+        help="Optional noise ratio used in new path layout: model/noise-XXX/decoding/hypo/lang.jsonl",
+    )
     parser.add_argument("--score-batch-size", type=int, default=8)
     parser.add_argument("--comet-gpus", type=int, default=1)
     parser.add_argument("--metric-models", default="comet,comet-kiwi,comet-kiwi-xl")
@@ -225,7 +322,7 @@ def main() -> None:
         raise FileNotFoundError(f"Input directory not found: {input_dir}")
 
     for lang_pair in lang_pairs:
-        in_path = build_result_jsonl_path(
+        in_path, noise_name = resolve_input_jsonl_path(
             base_dir=args.input_dir,
             lang_pair=lang_pair,
             model=args.model,
@@ -235,9 +332,8 @@ def main() -> None:
             beam_width=args.beam_width,
             length_penalty=args.length_penalty,
             early_stopping=args.early_stopping,
+            history_noise_ratio=args.history_noise_ratio,
         )
-        if not in_path.exists():
-            raise FileNotFoundError(f"Input file not found for {lang_pair}: {in_path}")
         rows_all = load_jsonl(in_path)
         translation_rows = [r for r in rows_all if isinstance(r, dict) and "id" in r and "hypo_1" in r]
         passthrough_rows = [r for r in rows_all if not (isinstance(r, dict) and "id" in r and "hypo_1" in r)]
@@ -268,6 +364,7 @@ def main() -> None:
             beam_width=args.beam_width,
             length_penalty=args.length_penalty,
             early_stopping=args.early_stopping,
+            noise_name=noise_name,
         )
         save_jsonl(out_path, [*translation_rows, *passthrough_rows, summary_row])
         print(f"[{lang_pair}] Scored: {in_path} -> {out_path}")

@@ -160,6 +160,7 @@ def run_batch_translation(
             build_first_turn_messages(item["source_text"], src_lang, tgt_lang) for item in chunk
         ]
         round_predictions_per_item: List[List[str]] = [[] for _ in chunk]
+        first_round_noised_per_item: List[str] = ["" for _ in chunk]
         for round_idx in range(1, num_rounds + 1):
             prompts = [
                 render_chat_prompt(tokenizer, messages, disable_thinking=disable_thinking)
@@ -172,14 +173,17 @@ def run_batch_translation(
                 history_text = text
                 if round_idx == 1:
                     history_text = shuffle_word_order_with_ratio(text, history_noise_ratio)
+                    first_round_noised_per_item[i] = history_text
                 messages_per_item[i].append({"role": "assistant", "content": history_text})
                 if round_idx < num_rounds:
                     messages_per_item[i].append({"role": "user", "content": "Please translate again for a better version."})
 
-        for item, round_texts in zip(chunk, round_predictions_per_item):
+        for item, round_texts, first_round_noised in zip(chunk, round_predictions_per_item, first_round_noised_per_item):
             row = {"id": item["id"], "source_text": item["source_text"], "reference_text": item["reference_text"]}
             for i, text in enumerate(round_texts, start=1):
                 row[f"hypo_{i}"] = text
+            if history_noise_ratio > 0.0 and round_texts:
+                row["hypo_1_noised"] = first_round_noised
             results.append(row)
     return results
 
