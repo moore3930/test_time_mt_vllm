@@ -13,8 +13,10 @@ SUMMARY_KEY_RE = re.compile(r"^avg_(?P<metric>.+)_hypo_(?P<round>\d+)$")
 
 def iter_result_files(results_dir: Path) -> Iterable[Path]:
     # Expected layout:
-    # 1) results/<model>/<decoding>/<hypo>/<lang_pair>.jsonl
-    # 2) (backward compatible) results/<model>/<decoding>/<lang_pair>.jsonl
+    # 1) results/<model>/noise-xxx/<decoding>/<hypo>/<lang_pair>.jsonl
+    # 2) results/<model>/<decoding>/<hypo>/<lang_pair>.jsonl
+    # 3) (backward compatible) results/<model>/<decoding>/<lang_pair>.jsonl
+    yield from results_dir.glob("*/*/*/*/*.jsonl")
     yield from results_dir.glob("*/*/*/*.jsonl")
     yield from results_dir.glob("*/*/*.jsonl")
 
@@ -43,16 +45,20 @@ def extract_metric_round_values(summary_row: Dict[str, object]) -> Dict[str, Dic
 
 def collect_scores(
     results_dir: Path,
-) -> Dict[Tuple[str, str, str], Dict[str, Dict[str, Dict[int, float]]]]:
-    # (model, decoding, hypo) -> language -> metric -> round -> avg_score
-    grouped: Dict[Tuple[str, str, str], Dict[str, Dict[str, Dict[int, float]]]] = {}
+) -> Dict[Tuple[str, str, str, str], Dict[str, Dict[str, Dict[int, float]]]]:
+    # (model, noise, decoding, hypo) -> language -> metric -> round -> avg_score
+    grouped: Dict[Tuple[str, str, str, str], Dict[str, Dict[str, Dict[int, float]]]] = {}
     files = sorted(iter_result_files(results_dir))
     for path in files:
         parts = path.relative_to(results_dir).parts
-        if len(parts) == 4:
+        if len(parts) == 5:
+            model, noise, decoding, hypo, _ = parts
+        elif len(parts) == 4:
             model, decoding, hypo, _ = parts
+            noise = "none"
         elif len(parts) == 3:
             model, decoding, _ = parts
+            noise = "none"
             hypo = "default"
         else:
             continue
@@ -63,21 +69,22 @@ def collect_scores(
         if not metric_values:
             continue
 
-        key = (model, decoding, hypo)
+        key = (model, noise, decoding, hypo)
         if key not in grouped:
             grouped[key] = {}
         grouped[key][language] = metric_values
     return grouped
 
 
-def print_report(grouped: Dict[Tuple[str, str, str], Dict[str, Dict[str, Dict[int, float]]]]) -> None:
+def print_report(grouped: Dict[Tuple[str, str, str, str], Dict[str, Dict[str, Dict[int, float]]]]) -> None:
     if not grouped:
         print("No result files found.")
         return
 
-    for (model, decoding, hypo) in sorted(grouped.keys()):
-        lang_data = grouped[(model, decoding, hypo)]
+    for (model, noise, decoding, hypo) in sorted(grouped.keys()):
+        lang_data = grouped[(model, noise, decoding, hypo)]
         print(f"Model: {model}")
+        print(f"Noise: {noise}")
         print(f"Decoding: {decoding}")
         print(f"Hypo: {hypo}")
 
