@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import re
 from pathlib import Path
 from typing import Dict, Iterable, List
@@ -89,6 +90,35 @@ def load_local_pair_inputs(
     return items
 
 
+def shuffle_word_order_with_ratio(text: str, noise_ratio: float) -> str:
+    if noise_ratio <= 0.0:
+        return text
+
+    has_whitespace = bool(re.search(r"\s", text))
+    if has_whitespace:
+        tokens = text.split()
+    else:
+        # Fallback tokenization for languages/scripts without spaces.
+        tokens = re.findall(r"[A-Za-z0-9]+|[\u4e00-\u9fff]|[\u3040-\u30ff]|[\uac00-\ud7a3]|[^\w\s]", text)
+
+    token_count = len(tokens)
+    if token_count < 2:
+        return text
+
+    num_shuffle = int(round(token_count * noise_ratio))
+    if num_shuffle < 2:
+        return text
+    num_shuffle = min(num_shuffle, token_count)
+
+    indices = random.sample(range(token_count), k=num_shuffle)
+    selected_tokens = [tokens[idx] for idx in indices]
+    random.shuffle(selected_tokens)
+    for idx, shuffled_token in zip(indices, selected_tokens):
+        tokens[idx] = shuffled_token
+
+    return " ".join(tokens) if has_whitespace else "".join(tokens)
+
+
 def run_batch_translation(
     llm: LLM,
     tokenizer: AutoTokenizer,
@@ -104,6 +134,7 @@ def run_batch_translation(
     early_stopping: bool,
     batch_size: int,
     num_rounds: int,
+    history_noise_ratio: float = 0.0,
     disable_thinking: bool = False,
 ) -> List[Dict]:
     from vllm import SamplingParams
@@ -138,7 +169,8 @@ def run_batch_translation(
             round_texts = [output.outputs[0].text.strip() for output in outputs]
             for i, text in enumerate(round_texts):
                 round_predictions_per_item[i].append(text)
-                messages_per_item[i].append({"role": "assistant", "content": text})
+                noisy_history_text = shuffle_word_order_with_ratio(text, history_noise_ratio)
+                messages_per_item[i].append({"role": "assistant", "content": noisy_history_text})
                 if round_idx < num_rounds:
                     messages_per_item[i].append({"role": "user", "content": "Please translate again for a better version."})
 
@@ -208,6 +240,12 @@ def main() -> None:
     parser.add_argument("--max-samples", type=int, default=1024)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-rounds", type=int, default=4)
+    parser.add_argument(
+        "--history-noise-ratio",
+        type=float,
+        default=0.0,
+        help="Shuffle token order in assistant history with this ratio (0.0-1.0).",
+    )
     parser.add_argument("--results-dir", default="results_raw")
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--decoding", choices=["sampling", "greedy", "beam_search"], default="sampling")
@@ -221,6 +259,8 @@ def main() -> None:
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--pipeline-parallel-size", type=int, default=1)
     args = parser.parse_args()
+    if not (0.0 <= args.history_noise_ratio <= 1.0):
+        raise ValueError("--history-noise-ratio must be in [0.0, 1.0]")
 
     try:
         from transformers import AutoTokenizer
@@ -261,12 +301,14 @@ def main() -> None:
             early_stopping=args.early_stopping,
             batch_size=args.batch_size,
             num_rounds=args.num_rounds,
+            history_noise_ratio=args.history_noise_ratio,
             disable_thinking=disable_thinking,
         )
         meta = {
             "record_type": "translation_summary",
             "num_rows": len(results),
             "num_rounds": args.num_rounds,
+            "history_noise_ratio": args.history_noise_ratio,
             "model": args.model,
             "decoding": args.decoding,
             "temperature": args.temperature,
