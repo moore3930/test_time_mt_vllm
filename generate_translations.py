@@ -242,7 +242,7 @@ def main() -> None:
     parser.add_argument("--dataset-root", default="datasets/wmt24pp/test")
     parser.add_argument("--lang-pairs", required=True, help="e.g. en-zh,en-ru,en-nl")
     parser.add_argument("--max-samples", type=int, default=1024)
-    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--batch-size", type=int, default=48)
     parser.add_argument("--num-rounds", type=int, default=4)
     parser.add_argument(
         "--history-noise-ratio",
