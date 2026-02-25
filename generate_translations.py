@@ -169,8 +169,10 @@ def run_batch_translation(
             round_texts = [output.outputs[0].text.strip() for output in outputs]
             for i, text in enumerate(round_texts):
                 round_predictions_per_item[i].append(text)
-                noisy_history_text = shuffle_word_order_with_ratio(text, history_noise_ratio)
-                messages_per_item[i].append({"role": "assistant", "content": noisy_history_text})
+                history_text = text
+                if round_idx == 1:
+                    history_text = shuffle_word_order_with_ratio(text, history_noise_ratio)
+                messages_per_item[i].append({"role": "assistant", "content": history_text})
                 if round_idx < num_rounds:
                     messages_per_item[i].append({"role": "user", "content": "Please translate again for a better version."})
 
