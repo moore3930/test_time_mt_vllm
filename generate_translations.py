@@ -203,9 +203,11 @@ def build_output_jsonl_path(
     beam_width: int,
     length_penalty: float,
     early_stopping: bool,
+    history_noise_ratio: float,
 ) -> Path:
     pair_name = _sanitize_for_filename(lang_pair)
     model_name = _sanitize_for_filename(model)
+    noise_name = _sanitize_for_filename(f"noise-{history_noise_ratio:.3f}")
     decode_name = _sanitize_for_filename(decoding)
     if decoding == "sampling":
         hypo_name = f"hypo_temp-{temperature:.3f}_top-p-{top_p:.3f}"
@@ -214,7 +216,7 @@ def build_output_jsonl_path(
     else:
         hypo_name = "hypo_greedy"
     hypo_name = _sanitize_for_filename(hypo_name)
-    return Path(results_dir) / model_name / decode_name / hypo_name / f"{pair_name}.jsonl"
+    return Path(results_dir) / model_name / noise_name / decode_name / hypo_name / f"{pair_name}.jsonl"
 
 
 def infer_pair_settings(lang_pair: str) -> tuple[str, str, str, str]:
@@ -327,6 +329,7 @@ def main() -> None:
             beam_width=args.beam_width,
             length_penalty=args.length_penalty,
             early_stopping=args.early_stopping,
+            history_noise_ratio=args.history_noise_ratio,
         )
         save_jsonl(output_path, [*results, meta])
         print(f"[{lang_pair}] Saved {len(results)} raw translations to {output_path}")
