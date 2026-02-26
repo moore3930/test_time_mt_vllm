@@ -6,7 +6,7 @@ import json
 import random
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Set
 
 LANG_NAME_MAP = {
     "en": "English",
@@ -24,6 +24,22 @@ LANG_NAME_MAP = {
     "hi": "Hindi",
     "nl": "Dutch",
     "is": "Icelandic",
+}
+
+WHITESPACE_TOKENIZED_LANGS: Set[str] = {
+    "en",
+    "de",
+    "fr",
+    "es",
+    "it",
+    "ru",
+    "pt",
+    "cs",
+    "uk",
+    "ko",
+    "hi",
+    "nl",
+    "is",
 }
 
 
@@ -90,18 +106,35 @@ def load_local_pair_inputs(
     return items
 
 
-def shuffle_word_order_with_ratio(text: str, noise_ratio: float) -> str:
+def shuffle_word_order_with_ratio(
+    text: str,
+    noise_ratio: float,
+    lang_key: str,
+    tokenizer: AutoTokenizer,
+) -> str:
     if noise_ratio <= 0.0:
         return text
 
-    has_whitespace = bool(re.search(r"\s", text))
-    if has_whitespace:
+    if lang_key in WHITESPACE_TOKENIZED_LANGS:
         tokens = text.split()
-    else:
-        # Fallback tokenization for languages/scripts without spaces.
-        tokens = re.findall(r"[A-Za-z0-9]+|[\u4e00-\u9fff]|[\u3040-\u30ff]|[\uac00-\ud7a3]|[^\w\s]", text)
+        token_count = len(tokens)
+        if token_count < 2:
+            return text
 
-    token_count = len(tokens)
+        num_shuffle = int(round(token_count * noise_ratio))
+        if num_shuffle < 2:
+            return text
+        num_shuffle = min(num_shuffle, token_count)
+
+        indices = random.sample(range(token_count), k=num_shuffle)
+        selected_tokens = [tokens[idx] for idx in indices]
+        random.shuffle(selected_tokens)
+        for idx, shuffled_token in zip(indices, selected_tokens):
+            tokens[idx] = shuffled_token
+        return " ".join(tokens)
+
+    token_ids = tokenizer.encode(text, add_special_tokens=False)
+    token_count = len(token_ids)
     if token_count < 2:
         return text
 
@@ -111,12 +144,16 @@ def shuffle_word_order_with_ratio(text: str, noise_ratio: float) -> str:
     num_shuffle = min(num_shuffle, token_count)
 
     indices = random.sample(range(token_count), k=num_shuffle)
-    selected_tokens = [tokens[idx] for idx in indices]
-    random.shuffle(selected_tokens)
-    for idx, shuffled_token in zip(indices, selected_tokens):
-        tokens[idx] = shuffled_token
+    selected_ids = [token_ids[idx] for idx in indices]
+    random.shuffle(selected_ids)
+    for idx, shuffled_id in zip(indices, selected_ids):
+        token_ids[idx] = shuffled_id
 
-    return " ".join(tokens) if has_whitespace else "".join(tokens)
+    return tokenizer.decode(
+        token_ids,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+    ).strip()
 
 
 def run_batch_translation(
@@ -125,6 +162,7 @@ def run_batch_translation(
     items: List[Dict],
     src_lang: str,
     tgt_lang: str,
+    tgt_lang_key: str,
     max_tokens: int,
     temperature: float,
     top_p: float,
@@ -170,7 +208,12 @@ def run_batch_translation(
             round_texts = [output.outputs[0].text.strip() for output in outputs]
             for i, text in enumerate(round_texts):
                 round_predictions_per_item[i].append(text)
-                history_text = shuffle_word_order_with_ratio(text, history_noise_ratio)
+                history_text = shuffle_word_order_with_ratio(
+                    text=text,
+                    noise_ratio=history_noise_ratio,
+                    lang_key=tgt_lang_key,
+                    tokenizer=tokenizer,
+                )
                 round_noised_per_item[i].append(history_text)
                 messages_per_item[i].append({"role": "assistant", "content": history_text})
                 if round_idx < num_rounds:
@@ -298,6 +341,7 @@ def main() -> None:
             items=items,
             src_lang=src_lang,
             tgt_lang=tgt_lang,
+            tgt_lang_key=tgt_key,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
             top_p=args.top_p,
