@@ -210,7 +210,7 @@ def main() -> None:
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--decoding", choices=["sampling", "greedy", "beam_search"], default="sampling")
     parser.add_argument("--temperature", type=float, default=1.0)
-    parser.add_argument("--top-p", type=float, default=0.95)
+    parser.add_argument("--top-p", type=float, default=1.00)
     parser.add_argument("--beam-width", type=int, default=1)
     parser.add_argument("--length-penalty", type=float, default=1.0)
     parser.add_argument("--early-stopping", action="store_true")
