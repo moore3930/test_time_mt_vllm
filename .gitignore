@@ -1,6 +1,9 @@
+analysis/
+.DS_Store
+analysis/.DS_Store
 analysis/data/
 temp/
-plot2/
-plots/
+scripts/plot2/
+scripts/plot1/
 .idea/
 __pycache__/

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+from math import sqrt
 from pathlib import Path
 from statistics import mean, pstdev
 from typing import Dict, List
 
-SAMPLE_SIZES = [1, 2, 4, 8, 16, 32, 64]
+SAMPLE_SIZES = [1, 2, 4, 8, 16, 32, 64, 128]
 SELECT_KEY_PREFIX_CANDIDATES = ["cometkiwixl_hypo_", "avg_cometkiwixl_hypo_"]
 REPORT_KEY_PREFIX_CANDIDATES = ["comet_hypo_", "avg_comet_hypo_"]
 
@@ -70,13 +71,17 @@ def summarize_best_of_n(jsonl_path: Path) -> Dict[int, Dict[str, float]]:
                 "count": 0,
                 "mean": float("nan"),
                 "std": float("nan"),
+                "se": float("nan"),
             }
             continue
 
+        count = len(values)
+        std = pstdev(values)
         summary[n] = {
-            "count": len(values),
+            "count": count,
             "mean": mean(values),
-            "std": pstdev(values),
+            "std": std,
+            "se": std / sqrt(count),
         }
 
     return summary
@@ -98,14 +103,14 @@ def print_table(results: Dict[str, Dict[int, Dict[str, float]]]) -> None:
             "\n=== "
             f"{lang_pair} (select: cometkiwi-xl / report: comet) ==="
         )
-        print("N\tcount\tmean(×100)\tstd(×100)")
+        print("N\tcount\tmean\tstd\tse")
         for n in SAMPLE_SIZES:
             s = stats_by_n[n]
             if s["count"] == 0:
                 continue
-            mean_x100 = s["mean"] * 100
-            std_x100 = s["std"] * 100
-            print(f"{n}\t{s['count']}\t{mean_x100:.1f}\t{std_x100:.1f}")
+            print(
+                f"{n}\t{s['count']}\t{s['mean']:.4f}\t{s['std']:.4f}\t{s['se']:.4f}"
+            )
 
 
 def main() -> None:
