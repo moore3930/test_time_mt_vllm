@@ -371,7 +371,7 @@ def main() -> None:
         default=0.0,
         help="Shuffle token order in assistant history with this ratio (0.0-1.0).",
     )
-    parser.add_argument("--results-dir", default="results_doc_raw")
+    parser.add_argument("--results-dir", default="results/results_win_raw")
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--decoding", choices=["sampling", "greedy", "beam_search"], default="sampling")
     parser.add_argument("--temperature", type=float, default=1.0)
@@ -386,6 +386,7 @@ def main() -> None:
     args = parser.parse_args()
     if not (0.0 <= args.history_noise_ratio <= 1.0):
         raise ValueError("--history-noise-ratio must be in [0.0, 1.0]")
+    Path(args.results_dir).mkdir(parents=True, exist_ok=True)
 
     try:
         from transformers import AutoTokenizer
