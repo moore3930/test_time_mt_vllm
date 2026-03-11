@@ -436,8 +436,8 @@ def build_summary_row(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Score raw translations with COMET metric models.")
-    parser.add_argument("--input-dir", default="results_doc_raw")
-    parser.add_argument("--output-dir", default="results_doc")
+    parser.add_argument("--input-dir", default="results/results_win_raw")
+    parser.add_argument("--output-dir", default="results/results_win")
     parser.add_argument("--model", default="google/gemma-3-4b-it")
     parser.add_argument("--lang-pairs", required=True, help="e.g. en-zh,en-ru,en-nl")
     parser.add_argument("--decoding", choices=["sampling", "greedy", "beam_search"], default="sampling")
