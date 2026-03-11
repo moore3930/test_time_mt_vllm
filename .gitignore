@@ -3,7 +3,7 @@ analysis/
 analysis/.DS_Store
 analysis/data/
 temp/
-scripts/plot2/
-scripts/plot1/
+plots/plot2/
+plots/plot1/
 .idea/
 __pycache__/
