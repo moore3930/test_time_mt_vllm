@@ -131,7 +131,7 @@ def main() -> None:
     parser.add_argument(
         "--input",
         type=Path,
-        default=Path("en-zh.jsonl"),
+        default=Path("en-nl.jsonl"),
         help="Input JSONL file",
     )
     parser.add_argument(
