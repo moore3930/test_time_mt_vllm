@@ -116,10 +116,12 @@ def process_one_file(input_path: Path, output_path: Path, window_size: int) -> T
     return len(rows), len(windowed_rows), skipped_short_docs
 
 
-def process_lang_pairs(base_dir: Path, lang_pairs: List[str], window_size: int) -> None:
+def process_lang_pairs(
+    input_base_dir: Path, output_base_dir: Path, lang_pairs: List[str], window_size: int
+) -> None:
     for lang_pair in lang_pairs:
-        input_path = (base_dir / lang_pair / f"test.{lang_pair}.jsonl").resolve()
-        output_path = default_output_path(input_path)
+        input_path = (input_base_dir / lang_pair / f"test.{lang_pair}.jsonl").resolve()
+        output_path = (output_base_dir / lang_pair / f"test.{lang_pair}.jsonl").resolve()
         original_docs, new_docs, skipped_short_docs = process_one_file(
             input_path=input_path,
             output_path=output_path,
@@ -144,10 +146,16 @@ def main() -> None:
         help="Comma-separated language pairs or 'all'. Ignored when --input is set.",
     )
     parser.add_argument(
-        "--base-dir",
+        "--input-base-dir",
         type=Path,
-        default=Path(__file__).resolve().parent,
+        default=Path(__file__).resolve().parent / "wmt24pp_doc",
         help="Base directory containing <lang_pair>/test.<lang_pair>.jsonl",
+    )
+    parser.add_argument(
+        "--output-base-dir",
+        type=Path,
+        default=Path(__file__).resolve().parent / "wmt24pp_win",
+        help="Output base directory. Keeps same subdirectory structure as input base.",
     )
     parser.add_argument(
         "--input",
@@ -171,7 +179,16 @@ def main() -> None:
 
     if args.input is not None:
         input_path = args.input.resolve()
-        output_path = args.output.resolve() if args.output else default_output_path(input_path)
+        if args.output:
+            output_path = args.output.resolve()
+        else:
+            input_base_dir = args.input_base_dir.resolve()
+            output_base_dir = args.output_base_dir.resolve()
+            try:
+                rel = input_path.relative_to(input_base_dir)
+                output_path = (output_base_dir / rel).resolve()
+            except ValueError:
+                output_path = default_output_path(input_path)
         original_docs, new_docs, skipped_short_docs = process_one_file(
             input_path=input_path,
             output_path=output_path,
@@ -184,9 +201,15 @@ def main() -> None:
         print(f"Skipped docs (num_sentences < {args.window_size}): {skipped_short_docs}")
         return
 
-    base_dir = args.base_dir.resolve()
+    input_base_dir = args.input_base_dir.resolve()
+    output_base_dir = args.output_base_dir.resolve()
     lang_pairs = parse_lang_pairs(args.lang_pairs)
-    process_lang_pairs(base_dir=base_dir, lang_pairs=lang_pairs, window_size=args.window_size)
+    process_lang_pairs(
+        input_base_dir=input_base_dir,
+        output_base_dir=output_base_dir,
+        lang_pairs=lang_pairs,
+        window_size=args.window_size,
+    )
 
 
 if __name__ == "__main__":

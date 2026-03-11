@@ -31,10 +31,10 @@ def parse_lang_pairs(value: str) -> list[str]:
     return [x.strip() for x in value.split(",") if x.strip()]
 
 
-def load_parallel_sentence_map(base_dir: Path, lang_pair: str) -> dict[str, str]:
+def load_parallel_sentence_map(wmt24pp_dir: Path, lang_pair: str) -> dict[str, str]:
     src_lang, tgt_lang = lang_pair.split("-")
-    src_path = base_dir / ".." / "wmt24pp" / "test" / lang_pair / f"test.{lang_pair}.{src_lang}"
-    tgt_path = base_dir / ".." / "wmt24pp" / "test" / lang_pair / f"test.{lang_pair}.{tgt_lang}"
+    src_path = wmt24pp_dir / "test" / lang_pair / f"test.{lang_pair}.{src_lang}"
+    tgt_path = wmt24pp_dir / "test" / lang_pair / f"test.{lang_pair}.{tgt_lang}"
 
     bitext_map: dict[str, str] = {}
     with src_path.open("r", encoding="utf-8") as src_fin, tgt_path.open("r", encoding="utf-8") as tgt_fin:
@@ -78,14 +78,14 @@ def flush_chunk(
     jsonl_fout.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def build_doc_bitext(base_dir: Path, lang_pair: str, max_src_words: int) -> int:
-    out_dir = base_dir / lang_pair
+def build_doc_bitext(out_base_dir: Path, wmt24pp_dir: Path, lang_pair: str, max_src_words: int) -> int:
+    out_dir = out_base_dir / lang_pair
     create_clean_dir(out_dir)
 
-    bitext_map = load_parallel_sentence_map(base_dir, lang_pair)
+    bitext_map = load_parallel_sentence_map(wmt24pp_dir, lang_pair)
 
     # WMT24 document metadata uses en-zh XML ids for all language pairs.
-    root = ET.parse(base_dir / "raw" / "wmttest2024.src.en-zh.xml").getroot()
+    root = ET.parse(out_base_dir / "raw" / "wmttest2024.src.en-zh.xml").getroot()
     num_chunks = 0
 
     src_lang, tgt_lang = lang_pair.split("-")
@@ -167,13 +167,31 @@ def main() -> None:
         default=150,
         help="Max source words per chunk before splitting.",
     )
+    parser.add_argument(
+        "--wmt24pp-dir",
+        type=Path,
+        default=Path(__file__).resolve().parent / "wmt24pp",
+        help="Directory containing sentence-level bitext under test/<lang_pair>/",
+    )
+    parser.add_argument(
+        "--out-base-dir",
+        type=Path,
+        default=Path(__file__).resolve().parent / "wmt24pp_doc",
+        help="Output directory containing raw/ and <lang_pair>/ subdirs",
+    )
     args = parser.parse_args()
 
-    base_dir = Path(__file__).resolve().parent
+    wmt24pp_dir = args.wmt24pp_dir.resolve()
+    out_base_dir = args.out_base_dir.resolve()
     lang_pairs = parse_lang_pairs(args.lang_pairs)
     for lang_pair in lang_pairs:
-        chunks = build_doc_bitext(base_dir, lang_pair, args.max_src_words)
-        print(f"{lang_pair}: wrote {chunks} doc chunks to {base_dir / lang_pair}")
+        chunks = build_doc_bitext(
+            out_base_dir=out_base_dir,
+            wmt24pp_dir=wmt24pp_dir,
+            lang_pair=lang_pair,
+            max_src_words=args.max_src_words,
+        )
+        print(f"{lang_pair}: wrote {chunks} doc chunks to {out_base_dir / lang_pair}")
 
 
 if __name__ == "__main__":
