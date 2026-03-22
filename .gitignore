@@ -1,4 +1,7 @@
 analysis/
+results/
+analysis_bsn/
+analysis/
 .DS_Store
 analysis/.DS_Store
 analysis/data/

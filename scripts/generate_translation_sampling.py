@@ -195,6 +195,25 @@ def parse_lang_pairs(lang_pairs: str) -> List[str]:
     return pairs
 
 
+def load_tokenizer_or_die(auto_tokenizer_cls, model_name_or_path: str):
+    try:
+        return auto_tokenizer_cls.from_pretrained(model_name_or_path)
+    except json.JSONDecodeError as e:
+        model_path = Path(model_name_or_path)
+        local_hint = ""
+        if model_path.exists():
+            local_hint = (
+                f"\nDetected local model path: {model_path}"
+                f"\nInspect file: {model_path / 'tokenizer_config.json'}"
+            )
+        raise SystemExit(
+            f"Failed to parse tokenizer JSON while loading --model={model_name_or_path!r}."
+            "\nRoot cause: tokenizer_config.json appears malformed "
+            "(often caused by interrupted or incomplete download)."
+            f"{local_hint}\nSuggested fix: clear the affected model cache/local snapshot and re-download, then retry."
+        ) from e
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate translations via parallel sampling (no COMET scoring, no round history in context)."
@@ -206,7 +225,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=48)
     parser.add_argument("--num-rounds", type=int, default=4)
     parser.add_argument("--history-noise-ratio", type=float, default=0.0)
-    parser.add_argument("--results-dir", default="results_raw")
+    parser.add_argument("--results-dir", default="results/results_sampling_raw")
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--decoding", choices=["sampling", "greedy", "beam_search"], default="sampling")
     parser.add_argument("--temperature", type=float, default=1.0)
@@ -232,7 +251,7 @@ def main() -> None:
     disable_thinking = "qwen3" in args.model.lower()
     lang_pairs = parse_lang_pairs(args.lang_pairs)
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    tokenizer = load_tokenizer_or_die(AutoTokenizer, args.model)
     llm = LLM(
         model=args.model,
         gpu_memory_utilization=args.gpu_memory_utilization,

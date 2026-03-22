@@ -11,7 +11,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_DATA_JSON = ROOT_DIR / "analysis" / "sampling" / "best_of_n_summary.json"
+DEFAULT_DATA_JSON = ROOT_DIR / "analysis_bsn" / "sampling_data" / "best_of_n_summary.json"
 
 
 def load_data(data_json: Path) -> Dict[str, Dict[str, Dict[str, List[float]]]]:
@@ -90,7 +90,7 @@ def plot_one(
     plt.legend(loc="lower right", frameon=False)
     plt.tight_layout()
 
-    out_path = out_dir / f"best_of_n_{lang_pair}_temp_compare.png"
+    out_path = out_dir / f"best_of_n_{lang_pair}.png"
     plt.savefig(out_path)
     plt.close()
     return out_path
@@ -114,7 +114,7 @@ def main() -> None:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=Path("plots") / "best_of_n",
+        default="best_of_n",
         help="Directory to save output figures.",
     )
     args = parser.parse_args()
