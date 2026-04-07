@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import os
 import re
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -235,12 +237,35 @@ def _get_metricx24_runtime(model_name: str) -> tuple[object, object, object]:
             import transformers
             from metricx24 import models as metricx_models
         except ModuleNotFoundError as e:
-            missing = e.name or "metricx24"
-            raise SystemExit(
-                "Missing dependency for MetricX24: "
-                f"{missing}. Install with: pip install transformers sentencepiece datasets "
-                "&& pip install git+https://github.com/google-research/metricx.git"
-            ) from e
+            # MetricX repo is not pip-installable as a package.
+            metricx_repo = os.environ.get("METRICX_REPO", "").strip()
+            candidates = [metricx_repo, str(Path.cwd() / "metricx")]
+            loaded = False
+            for cand in candidates:
+                if not cand:
+                    continue
+                p = Path(cand)
+                if not (p.exists() and (p / "metricx24").exists()):
+                    continue
+                sys.path.insert(0, str(p))
+                try:
+                    from metricx24 import models as metricx_models
+
+                    loaded = True
+                    break
+                except ModuleNotFoundError:
+                    continue
+            if not loaded:
+                missing = e.name or "metricx24"
+                raise SystemExit(
+                    "Missing dependency for MetricX24: "
+                    f"{missing}. Install deps with:\n"
+                    "  git clone https://github.com/google-research/metricx.git\n"
+                    "  pip install -r metricx/requirements.txt\n"
+                    "Then set one of:\n"
+                    "  export PYTHONPATH=/path/to/metricx:$PYTHONPATH\n"
+                    "  export METRICX_REPO=/path/to/metricx"
+                ) from e
         tokenizer = transformers.AutoTokenizer.from_pretrained("google/mt5-xl")
         model = metricx_models.MT5ForRegression.from_pretrained(model_name, torch_dtype="auto")
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
