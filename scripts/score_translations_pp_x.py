@@ -10,24 +10,28 @@ from typing import Dict, List, Optional
 
 METRIC_MODEL_SPECS = {
     "comet": {
+        "backend": "comet",
         "field_prefix": "comet",
         "default_model": "Unbabel/wmt22-comet-da",
         "needs_ref": True,
         "label": "COMET",
     },
     "comet-kiwi": {
+        "backend": "comet",
         "field_prefix": "cometkiwi",
         "default_model": "Unbabel/wmt22-cometkiwi-da",
         "needs_ref": False,
         "label": "COMETKiwi",
     },
     "comet-kiwi-xl": {
+        "backend": "comet",
         "field_prefix": "cometkiwixl",
         "default_model": "Unbabel/wmt23-cometkiwi-da-xl",
         "needs_ref": False,
         "label": "COMETKiwiXL",
     },
     "metricX24": {
+        "backend": "metricx24",
         "field_prefix": "metricx24",
         "default_model": "google/metricx-24-hybrid-xxl-v2p6-bfloat16",
         "needs_ref": True,
@@ -36,6 +40,8 @@ METRIC_MODEL_SPECS = {
 }
 
 _COMET_MODEL_CACHE: Dict[str, object] = {}
+_METRICX24_MODEL_CACHE: Dict[str, object] = {}
+_METRICX24_TOKENIZER_CACHE: Dict[str, object] = {}
 
 def _sanitize_for_filename(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9._-]+", "_", text).strip("_")
@@ -219,6 +225,51 @@ def _release_comet_model(model_name: str) -> None:
         pass
 
 
+def _get_metricx24_runtime(model_name: str) -> tuple[object, object, object]:
+    if model_name in _METRICX24_MODEL_CACHE and model_name in _METRICX24_TOKENIZER_CACHE:
+        model = _METRICX24_MODEL_CACHE[model_name]
+        tokenizer = _METRICX24_TOKENIZER_CACHE[model_name]
+    else:
+        try:
+            import torch
+            import transformers
+            from metricx24 import models as metricx_models
+        except ModuleNotFoundError as e:
+            missing = e.name or "metricx24"
+            raise SystemExit(
+                "Missing dependency for MetricX24: "
+                f"{missing}. Install with: pip install transformers sentencepiece datasets "
+                "&& pip install git+https://github.com/google-research/metricx.git"
+            ) from e
+        tokenizer = transformers.AutoTokenizer.from_pretrained("google/mt5-xl")
+        model = metricx_models.MT5ForRegression.from_pretrained(model_name, torch_dtype="auto")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = model.to(device)
+        model.eval()
+        _METRICX24_MODEL_CACHE[model_name] = model
+        _METRICX24_TOKENIZER_CACHE[model_name] = tokenizer
+    import torch
+
+    return model, tokenizer, torch
+
+
+def _release_metricx24_runtime(model_name: str) -> None:
+    model = _METRICX24_MODEL_CACHE.pop(model_name, None)
+    tokenizer = _METRICX24_TOKENIZER_CACHE.pop(model_name, None)
+    if model is not None:
+        del model
+    if tokenizer is not None:
+        del tokenizer
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ModuleNotFoundError:
+        pass
+
+
 def infer_num_rounds(rows: List[Dict]) -> int:
     max_round = 0
     for row in rows:
@@ -258,6 +309,60 @@ def _score_key_for_rows(
         row[score_key] = score
 
 
+def _score_key_for_rows_metricx24(
+    rows: List[Dict],
+    mt_key: str,
+    score_key: str,
+    model_name: str,
+    score_batch_size: int,
+    needs_ref: bool,
+    max_input_length: int = 1536,
+) -> None:
+    model, tokenizer, torch = _get_metricx24_runtime(model_name)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    scores: List[float] = []
+
+    for start in range(0, len(rows), score_batch_size):
+        batch_rows = rows[start : start + score_batch_size]
+        input_texts: List[str] = []
+        for r in batch_rows:
+            source = str(r["source_text"])
+            hypo = str(r[mt_key])
+            if needs_ref:
+                ref = str(r["reference_text"])
+                text = f"source: {source} candidate: {hypo} reference: {ref}"
+            else:
+                text = f"source: {source} candidate: {hypo}"
+            input_texts.append(text)
+
+        encoded = tokenizer(input_texts, max_length=max_input_length, truncation=True, padding=False)
+        trimmed_input_ids: List[List[int]] = []
+        trimmed_attention_mask: List[List[int]] = []
+        for ids, attn in zip(encoded["input_ids"], encoded["attention_mask"]):
+            trimmed_input_ids.append(ids[:-1] if len(ids) > 0 else ids)
+            trimmed_attention_mask.append(attn[:-1] if len(attn) > 0 else attn)
+
+        padded = tokenizer.pad(
+            {"input_ids": trimmed_input_ids, "attention_mask": trimmed_attention_mask},
+            padding=True,
+            return_tensors="pt",
+        )
+        input_ids = padded["input_ids"].to(device)
+        attention_mask = padded["attention_mask"].to(device)
+
+        with torch.no_grad():
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+        preds = outputs.predictions
+        if hasattr(preds, "detach"):
+            preds = preds.detach().cpu().tolist()
+        scores.extend(float(x) for x in preds)
+
+    if len(scores) != len(rows):
+        raise RuntimeError("MetricX24 score count mismatch with translation rows.")
+    for row, score in zip(rows, scores):
+        row[score_key] = score
+
+
 def add_metric_scores(
     rows: List[Dict],
     num_rounds: int,
@@ -269,36 +374,64 @@ def add_metric_scores(
         raise ValueError("--score-batch-size must be > 0")
     for metric_name in metric_models:
         spec = METRIC_MODEL_SPECS[metric_name]
+        backend = str(spec.get("backend", "comet"))
         field_prefix = str(spec["field_prefix"])
         model_name = str(spec["default_model"])
         needs_ref = bool(spec["needs_ref"])
-        model = _get_comet_model(model_name)
+        model = _get_comet_model(model_name) if backend == "comet" else None
         for round_idx in range(1, num_rounds + 1):
             hypo_key = f"hypo_{round_idx}"
             score_key = f"{field_prefix}_{hypo_key}"
-            _score_key_for_rows(
-                rows=rows,
-                mt_key=hypo_key,
-                score_key=score_key,
-                needs_ref=needs_ref,
-                model=model,
-                score_batch_size=score_batch_size,
-                comet_gpus=comet_gpus,
-            )
-
-            noise_hypo_key = f"noise_hypo_{round_idx}"
-            if _all_rows_have_key(rows, noise_hypo_key):
-                noise_score_key = f"{field_prefix}_{noise_hypo_key}"
+            if backend == "comet":
                 _score_key_for_rows(
                     rows=rows,
-                    mt_key=noise_hypo_key,
-                    score_key=noise_score_key,
+                    mt_key=hypo_key,
+                    score_key=score_key,
                     needs_ref=needs_ref,
                     model=model,
                     score_batch_size=score_batch_size,
                     comet_gpus=comet_gpus,
                 )
-        _release_comet_model(model_name)
+            elif backend == "metricx24":
+                _score_key_for_rows_metricx24(
+                    rows=rows,
+                    mt_key=hypo_key,
+                    score_key=score_key,
+                    model_name=model_name,
+                    score_batch_size=score_batch_size,
+                    needs_ref=needs_ref,
+                )
+            else:
+                raise ValueError(f"Unsupported backend for metric {metric_name}: {backend}")
+
+            noise_hypo_key = f"noise_hypo_{round_idx}"
+            if _all_rows_have_key(rows, noise_hypo_key):
+                noise_score_key = f"{field_prefix}_{noise_hypo_key}"
+                if backend == "comet":
+                    _score_key_for_rows(
+                        rows=rows,
+                        mt_key=noise_hypo_key,
+                        score_key=noise_score_key,
+                        needs_ref=needs_ref,
+                        model=model,
+                        score_batch_size=score_batch_size,
+                        comet_gpus=comet_gpus,
+                    )
+                elif backend == "metricx24":
+                    _score_key_for_rows_metricx24(
+                        rows=rows,
+                        mt_key=noise_hypo_key,
+                        score_key=noise_score_key,
+                        model_name=model_name,
+                        score_batch_size=score_batch_size,
+                        needs_ref=needs_ref,
+                    )
+                else:
+                    raise ValueError(f"Unsupported backend for metric {metric_name}: {backend}")
+        if backend == "comet":
+            _release_comet_model(model_name)
+        elif backend == "metricx24":
+            _release_metricx24_runtime(model_name)
 
 
 def build_summary_row(
